@@ -1,0 +1,12 @@
+# Secrets: never commit real credentials
+.env
+!.env.example
+
+# Python virtual environment
+.venv/
+
+# Python bytecode cache
+__pycache__/
+
+# macOS metadata
+.DS_Store
