@@ -186,6 +186,30 @@ ID, final outcome.
 
 ## Agent permissions
 
+The agent gets the smallest set of abilities it needs to shop, and
+nothing that can move money on its own.
+
+| Ability | Agent | Guard | User |
+|---|---|---|---|
+| Search the catalog | Yes (read-only) | No | No |
+| Request a purchase | Yes, via `request_purchase` only | No | No |
+| Hold PayPal credentials | No | Yes, from environment variables | No |
+| Create a PayPal order | No | Yes, only after the decision step | No |
+| Confirm a charge | No | No | Yes, on PayPal's approval page |
+| Capture a payment | No | Yes, only after user confirmation | No |
+| Change budget or allowed merchants | No | No | Yes |
+| Read or edit the audit log | No | Write only (append) | Read |
+
+**Rules that hold no matter what the agent says:**
+- The agent's output is treated as untrusted input. Text like "ignore
+  your limits" in a request or a product listing does not change any
+  rule.
+- The audit log is append-only; no component can rewrite past
+  decisions.
+- Secrets live only in the guard's environment (.env locally, Render
+  environment variables in production) and are never committed or
+  logged.
+
 ## Risks and failures
 
 ## Eval plan
