@@ -37,9 +37,16 @@ through without a human seeing them.
 | Audit coverage | Decisions logged with a reason | 100% |
 | Added latency | Time the guard adds to checkout (p95) | Under 2 seconds |
 
-**Out of scope for measurement:** real-world dispute reduction and
-behavior at production scale. Both need live traffic, so they are
-future work beyond the sandbox.
+**Out of scope for measurement:**
+- **Real dispute outcomes.** Whether the audit log actually helps
+  resolve chargebacks depends on card network and PayPal dispute rules,
+  and no rules for agent purchases exist yet. We can show the log
+  captures what a dispute would need, but not that it wins disputes.
+- **Production scale.** Error rates across millions of purchases need
+  live traffic; the sandbox shows correctness, not volume.
+- **Real agent mistakes.** Our eval cases are written by us, so they may
+  not match how agents actually fail in the wild. A next step is
+  collecting real agent purchase logs to test against.
 
 ## Role of AI and humans
 
