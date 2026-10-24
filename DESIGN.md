@@ -228,4 +228,34 @@ nothing that can move money on its own.
 
 ## Eval plan
 
+The eval answers one question: does the guard catch bad purchases better
+than PayPal's checkout does today, without getting in the way of good
+ones?
+
+**Dataset:** about 60 cases in a JSONL file. Each case has:
+- `request`: what the user asked for ("running shoes under $100, size 10")
+- `item`: what the agent chose (name, size, price, merchant)
+- `policy`: the user's budget and allowed merchants
+- `expected`: confirm, warn, or block
+- `category`: good, over budget, wrong item, wrong size, blocked
+  merchant, duplicate, prompt injection, ambiguous
+
+**Runner:**
+1. Run every case through all three setups: no guard, PayPal today, full
+   guard.
+2. Run the full guard 3 times, because the intent check is
+   probabilistic. Report the average and the spread.
+3. Compare each result to `expected` and record latency per case.
+
+**Metrics reported:** miss rate (split into rule violations and intent
+mismatches), false-block rate, warning rate, duplicate charges, audit
+coverage, p95 latency.
+
+**Error analysis:** after each run, read every missed and every wrongly
+blocked case, group them by cause (prompt wording, ambiguous request,
+missing item detail), fix the most common cause, and rerun.
+
+**Results:** a table in the README comparing the three setups, with the
+targets next to the actual numbers.
+
 ## Timeline
