@@ -98,6 +98,92 @@ fill those two gaps.
 The PayPal access token can refund, pay out, manage disputes and more, far more than a shopping agent needs. So the agent never holds the token. Only the guardrail layer does, and the agent gets a single “request payment” tool that has to pass the guardrail’s checks first.
 ## Architecture
 
+The guard is a separate service that sits between the agent and PayPal.
+The agent can ask to buy; only the guard can create an order.
+
+```
+User request ("running shoes under $100, size 10")
+        |
+        v
++------------------+   search_catalog (read-only)
+|  Shopping agent  |-----------------------------> Sandbox catalog
+|  (LLM + 2 tools) |
++------------------+
+        | request_purchase(request, item)
+        v
++---------------------------------------------------------+
+|  Guard service (FastAPI)                                |
+|                                                         |
+|  1. Rules engine     budget, daily cap, merchants,      |
+|                      duplicate request ID   -> block?   |
+|  2. Intent check     LLM: request vs item  -> mismatch? |
+|  3. Risk score       amount vs normal, new merchant,    |
+|                      rapid repeats          -> high?    |
+|  4. Decision         confirm / warn / block             |
+|  5. Audit log        every step written to the database |
+|  6. PayPal client    create order with PayPal-Request-Id|
++---------------------------------------------------------+
+        | approval link + warning (if any)
+        v
++------------------+        +---------------------------+
+| Confirmation UI  |------->| PayPal approval (sandbox  |
+| shows warning    |        | buyer confirms or cancels)|
++------------------+        +---------------------------+
+                                     |
+                                     v
+                      Guard captures the order, logs result
+                      Webhooks update the audit log
+
+Dashboard (AG Grid): every request, decision, reason and outcome
+Eval runner: replays labeled cases through all three setups
+```
+
+**Components:**
+
+| Component | Tech | Responsibility |
+|---|---|---|
+| Shopping agent | Python, LLM API (PayPal Agent Toolkit for the agent setup) | Turns a user request into a chosen product; has no payment access |
+| Guard service | FastAPI | Runs rules, intent check and risk score; decides; talks to PayPal |
+| Intent check | One LLM call, JSON output | Compares the request to the item; returns match or mismatch, reason, confidence |
+| PayPal client | Orders v2 API (sandbox), credentials only in the guard | Create order, send buyer to approval, capture |
+| Database | SQLite | Purchase requests, decisions and the audit log |
+| Dashboard | AG Grid (AI-built), reading the guard's API | Shows every decision and lets the user review history |
+| Eval runner | Python script | Runs labeled cases, computes metrics, writes a results table |
+| Hosting | Render | Hosted demo URL |
+
+**Request lifecycle:**
+1. The agent calls `POST /purchase-requests` with the user's original
+   request, the chosen item and a unique request ID.
+2. The rules engine runs first because it is fast and exact. A violation
+   blocks immediately and skips the LLM call.
+3. The intent check and risk score run next. Either one can raise a
+   warning.
+4. The decision and every input to it are written to the audit log
+   before anything is sent to PayPal.
+5. If not blocked, the guard creates a PayPal order with the request ID
+   as the `PayPal-Request-Id` header, so a retry can never create a
+   second order.
+6. The user sees the warning (if any), then confirms or cancels on
+   PayPal's approval page.
+7. On confirmation the guard captures the order. The outcome, from the
+   capture response and webhooks, is added to the audit log.
+
+**Audit log record:** request ID, timestamp, user request text, item
+(name, size, price, merchant), rule results, intent verdict and reason,
+risk score, decision, user action (confirmed or cancelled), PayPal order
+ID, final outcome.
+
+**Key decisions:**
+- **Rules before AI.** Cheaper and faster, and clear violations never
+  depend on a probabilistic check.
+- **One LLM call, not an agent, for the intent check.** A single
+  structured comparison is easier to test, faster, and cheaper than a
+  multi-step agent.
+- **The guard owns the credentials.** The agent has no path to PayPal
+  except through the guard.
+- **Log before acting.** The audit record exists even if a later step
+  fails.
+
 ## Agent permissions
 
 ## Risks and failures
