@@ -259,3 +259,22 @@ missing item detail), fix the most common cause, and rerun.
 targets next to the actual numbers.
 
 ## Timeline
+
+| Date | Milestone | Done when |
+|---|---|---|
+| Oct 27 | M1: end-to-end purchase | Agent picks an item, guard stub, order created, sandbox buyer approves, capture succeeds |
+| Oct 28 to 29 | Rules and idempotency | Every rule has a pytest test; a retried request never double-charges |
+| Oct 30 to 31 | Intent check, risk score, decision, audit log | Warnings show before PayPal approval; every decision is logged |
+| Nov 1 to 2 | Eval set and runner | ~60 labeled cases run through all three setups |
+| Nov 3 | M2: real numbers | Evals fixed and rerun; results table in the README |
+| Nov 4 to 5 | Dashboard and webhooks | AG Grid shows the audit log; webhook events update outcomes |
+| Nov 6 | M3: hosted demo | Deployed on Render and tested from a fresh clone |
+| Nov 7 | Stretch (only if the core works) | Guard exposed as an MCP tool, or a recurring-charge rule |
+| Nov 8 to 9 | Feature freeze | README finished; final eval run |
+| Nov 10 to 11 | Demo and submission prep | 3-minute video recorded; Devpost description written |
+| Nov 12 | Submit | Submitted on Devpost by noon (deadline 3:00 PM ET) |
+
+If behind, cut in this order: the stretch goal, then webhooks (use the
+capture response instead), then the risk score (keep rules plus the
+intent check). The rules, intent check, audit log and eval results are
+never cut.
