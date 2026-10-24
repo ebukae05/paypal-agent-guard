@@ -51,6 +51,49 @@ the user as a plain confirmation, with no block and no warning.
 
 ## Role of AI and humans
 
+PayPal requires a human confirmation before any charge, and we keep that
+rule. The problem is that every confirmation looks the same today: a
+purchase that matches the user's request and one that doesn't both show
+the same "Buy now" button, so users approve without checking. Our guard
+makes each confirmation meaningful by checking the purchase first and
+telling the user what to look at.
+
+**Three outcomes for every purchase:**
+1. **Confirm:** the item matches the request and passes all rules. The
+   user sees a normal one-click confirmation.
+2. **Confirm with warning:** the AI finds a mismatch (wrong size, wrong
+   item, unusual merchant) or the risk score is high. The user sees the
+   confirmation with the specific problem highlighted, for example
+   "You asked for size 10; this is size 11."
+3. **Block:** a clear rule violation (over budget, blocked merchant,
+   duplicate request). The purchase never reaches confirmation.
+
+**Who does what:**
+
+| Part | Owner | Why this owner |
+|---|---|---|
+| Budget, allowed merchants, duplicate checks | Rules (code) | These are exact yes/no checks; code is faster, cheaper and never wrong about them |
+| Intent check: does the item match the request? | AI | Needs judgment ("running shoes" vs. a listing for "trail sneakers") that rules can't express |
+| Final decision on every charge | Human | PayPal's rule, and the user is the only one who knows what they meant |
+| Setting the policy (budget, merchants) | Human | The user defines their own limits upfront |
+| Recording request, verdict and decision | Audit log | Creates the evidence a dispute needs |
+
+**When the AI is wrong or unsure:** the guard fails safe. If the intent
+check errors, times out, or returns low confidence, the purchase gets a
+warning instead of a normal confirmation. A wrong warning costs the user
+a second look; a wrong pass could cost them money.
+
+**Least privilege:** the agent never holds payment credentials. It can
+only request a purchase from the guard. Payment uses PayPal's single-use
+tokens, which are limited to one merchant, amount, currency and
+expiration, so card data never passes through the model.
+
+**What the guard adds to PayPal's checkout:** the token already enforces
+a maximum amount, and attribution records which agent made the purchase.
+Neither checks whether the item matches what the user asked for, and
+neither records the request itself. The intent check and the audit log
+fill those two gaps.
+
 ## Scope
 The PayPal access token can refund, pay out, manage disputes and more, far more than a shopping agent needs. So the agent never holds the token. Only the guardrail layer does, and the agent gets a single “request payment” tool that has to pass the guardrail’s checks first.
 ## Architecture
