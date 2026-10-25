@@ -8,29 +8,11 @@ I am a student learning AI engineering. My goal is to understand every
 part of this project well enough to explain it in an interview without AI.
 Follow the rules below on every task.
 
-## Hand-written zones: do NOT write this code
-
-I write these myself. For these files and features, you may explain
-concepts, give hints, answer questions, point out bugs, and review my
-code, but you must not write or edit the implementation, even if I seem
-stuck or the task would be faster. If a task touches one of these, stop
-and tell me which part is mine to write.
-
-1. **FastAPI endpoints**: route functions, request and response models
-   (`POST /purchase-requests`, `GET /health`, approve and capture routes).
-2. **Rules engine**: budget, daily cap, allowed merchants, duplicate
-   request checks.
-3. **Intent check**: the prompt, the LLM call, and parsing and validating
-   the JSON response, including the fail-safe behavior.
-
-When I ask for help in these zones:
-- Start with a hint or a question, not the answer.
-- If I ask for the answer directly, give the smallest piece that unblocks
-  me and explain why it works.
-- When reviewing, point to the line and explain the problem; let me fix it.
-
 ## AI-allowed zones: you may write this code
 
+- FastAPI endpoints: route functions, request and response models
+- Rules engine: budget, daily cap, allowed merchants, duplicate checks
+- Intent check: the prompt, the LLM call, and JSON parsing and validation
 - Sandbox catalog data and seed scripts
 - The AG Grid dashboard (frontend)
 - Boilerplate: config, settings, database setup, Render deploy files
