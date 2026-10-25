@@ -16,11 +16,15 @@ SANDBOX_BASE_URL = "https://api-m.sandbox.paypal.com"
 class PayPalError(Exception):
     """A PayPal API call failed. Holds only safe details, never headers or tokens."""
 
-    def __init__(self, status_code, name, message, debug_id):
+    def __init__(self, status_code, name, message, debug_id, issue=None):
         self.status_code = status_code
         self.name = name
         self.debug_id = debug_id
-        super().__init__(f"PayPal {status_code} {name}: {message} (debug_id={debug_id})")
+        # Specific reason from details[0].issue, e.g. "ORDER_NOT_APPROVED".
+        self.issue = issue
+        super().__init__(
+            f"PayPal {status_code} {name}/{issue}: {message} (debug_id={debug_id})"
+        )
 
 
 def approval_link(order):
@@ -85,11 +89,13 @@ class PayPalClient:
             body = response.json()
         except ValueError:
             body = {}
+        details = body.get("details") or [{}]
         raise PayPalError(
             response.status_code,
             body.get("name") or body.get("error", "UNKNOWN"),
             body.get("message") or body.get("error_description", ""),
             body.get("debug_id"),
+            details[0].get("issue"),
         )
 
     def create_order(self, amount, currency, request_id, description):
