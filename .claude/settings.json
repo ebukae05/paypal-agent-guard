@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python.exe -m pytest -q)",
+      "Bash(.venv/Scripts/python.exe -m pytest -q *)",
+      "Bash(.venv/Scripts/python.exe -m pytest -v *)",
+      "Bash(.venv/Scripts/ruff check .)",
+      "mcp__terminal__read_terminal",
+      "mcp__Claude_Browser__read_network_requests"
+    ]
+  }
+}

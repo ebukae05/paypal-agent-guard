@@ -109,7 +109,7 @@ User request ("running shoes under $100, size 10")
 |  Shopping agent  |-----------------------------> Sandbox catalog
 |  (LLM + 2 tools) |
 +------------------+
-        | request_purchase(request, item)
+        | request_purchase(product_id)
         v
 +---------------------------------------------------------+
 |  Guard service (FastAPI)                                |
@@ -142,7 +142,7 @@ Eval runner: replays labeled cases through all three setups
 
 | Component | Tech | Responsibility |
 |---|---|---|
-| Shopping agent | Python, LLM API (PayPal Agent Toolkit for the agent setup) | Turns a user request into a chosen product; has no payment access |
+| Shopping agent | Python, Claude API via the anthropic SDK (manual tool-use loop; no PayPal Agent Toolkit, whose tools call PayPal directly) | Turns a user request into a chosen product; has no payment access |
 | Guard service | FastAPI | Runs rules, intent check and risk score; decides; talks to PayPal |
 | Intent check | One LLM call, JSON output | Compares the request to the item; returns match or mismatch, reason, confidence |
 | PayPal client | Orders v2 API (sandbox), credentials only in the guard | Create order, send buyer to approval, capture |
