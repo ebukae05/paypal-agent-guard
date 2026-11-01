@@ -4,3 +4,4 @@ ruff==0.17.3
 mypy==2.4.1
 pytest-cov==7.1.0
 pre-commit==4.7.0
+hypothesis==6.170.14

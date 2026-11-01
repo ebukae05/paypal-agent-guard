@@ -3,6 +3,12 @@
 # even when the venv isn't activated. Windows backslash path on purpose:
 # Windows can't launch a relative path written with forward slashes.
 repos:
+  # Scans staged changes for secrets (keys, tokens) and blocks the commit.
+  # pre-commit builds this pinned version itself; no gitleaks install needed.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
   - repo: local
     hooks:
       - id: ruff-check
