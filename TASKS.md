@@ -22,7 +22,7 @@ risk score. Never cut rules, intent check, audit log or evals.
 
 ## Hardening what exists
 
-- [ ] [AI] Tests for guard/paypal_client.py (idempotency, declines, timeouts). Done when: mocked HTTP tests cover token caching, PayPal-Request-Id on create and capture, error → PayPalError with debug_id, timeout; coverage of the file well above 38%
+- [x] [AI] Tests for guard/paypal_client.py (idempotency, declines, timeouts). Done when: mocked HTTP tests cover token caching, PayPal-Request-Id on create and capture, error → PayPalError with debug_id, timeout; coverage of the file well above 38%. Evidence: tests/test_paypal_client.py (21 tests), 99% coverage, tester PASS (3019eaf, 0f471cf)
 - [ ] [AI] PayPal 5xx/timeout: retry with the same request ID, then mark the request failed. Done when: tests for retry-then-success and retry-then-fail
 
 ## Rules
@@ -72,3 +72,4 @@ risk score. Never cut rules, intent check, audit log or evals.
 - 2026-11-01: TASKS.md created and synced with the code; setup, M1 pieces and idempotency ticked with evidence.
 - 2026-11-01: Live M1 run passed: agent → guard → sandbox buyer approval → capture COMPLETED (order 9RH81556VE266902J, capture 81W82564R0244494G). ruff, mypy, pytest green.
 - 2026-11-01: Progress dashboard: scripts/progress.py (stdlib) renders progress.html with ring, milestone bars, countdown, burndown, task board, notes and CI status; tests/test_progress.py added.
+- 2026-11-01: paypal_client tests: 21 mocked-HTTP tests (token cache, PayPal-Request-Id, PayPalError + debug_id, timeouts, sandbox host); coverage 38% → 99%; tester PASS (16/18 mutations caught, the rest fixed or harmless); 74 passed.
