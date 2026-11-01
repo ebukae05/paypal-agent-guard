@@ -12,7 +12,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -34,7 +34,7 @@ CONFLICT_ISSUES = {
 
 # request_id -> {"fingerprint", "order_id", "approval_url", "capture"}.
 # In memory for M1; SQLite and the audit log replace this later.
-PURCHASES = {}
+PURCHASES: dict[str, dict[str, Any]] = {}
 
 
 @asynccontextmanager
@@ -119,7 +119,8 @@ def create_purchase(purchase: PurchaseRequest, paypal: PayPalClient = Depends(ge
 
     # Later milestones: rules engine (block?), intent check and risk score
     # (warn?), then the audit log, all before PayPal is called.
-    decision, reason = "confirm", "M1 stub: no checks yet"
+    decision: Literal["confirm", "warn", "block"] = "confirm"
+    reason = "M1 stub: no checks yet"
 
     if record["order_id"] is None:
         item = purchase.item
