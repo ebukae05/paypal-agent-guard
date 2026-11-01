@@ -22,9 +22,7 @@ class PayPalError(Exception):
         self.debug_id = debug_id
         # Specific reason from details[0].issue, e.g. "ORDER_NOT_APPROVED".
         self.issue = issue
-        super().__init__(
-            f"PayPal {status_code} {name}/{issue}: {message} (debug_id={debug_id})"
-        )
+        super().__init__(f"PayPal {status_code} {name}/{issue}: {message} (debug_id={debug_id})")
 
 
 def approval_link(order):

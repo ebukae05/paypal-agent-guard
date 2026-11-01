@@ -13,7 +13,12 @@ def ids(products):
 def test_running_shoes_under_100_size_10():
     results = search_catalog("running shoes", max_price="100", size="10")
     assert ids(results) == {
-        "shoe-001", "shoe-004", "shoe-005", "shoe-008", "shoe-009", "shoe-010",
+        "shoe-001",
+        "shoe-004",
+        "shoe-005",
+        "shoe-008",
+        "shoe-009",
+        "shoe-010",
     }
 
 
@@ -46,6 +51,7 @@ def test_editing_a_result_does_not_change_the_catalog():
 
 # The inputs below are what an LLM agent is likely to send as tool arguments.
 
+
 @pytest.mark.parametrize("max_price", ["100", 100, 100.0, "$100", " $100.00 ", "1,000"])
 def test_max_price_accepts_common_formats(max_price):
     results = search_catalog("running shoes", max_price=max_price, size="10")
@@ -69,7 +75,9 @@ def test_letter_sizes_ignore_case():
 
 @pytest.mark.parametrize("blank", [None, ""])
 def test_blank_filters_mean_no_filter(blank):
-    assert search_catalog("running shoes", max_price=blank, size=blank) == search_catalog("running shoes")
+    assert search_catalog("running shoes", max_price=blank, size=blank) == search_catalog(
+        "running shoes"
+    )
 
 
 def test_none_query_returns_empty_list():

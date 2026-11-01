@@ -1,0 +1,22 @@
+# promptfoo starter for the intent check (DESIGN.md, Eval plan).
+# Run from the repo root:  npx promptfoo@0.125.1 eval
+#
+# Scaffold only. The prompt (evals/intent_prompt.txt) and the cases with
+# their expected labels (evals/intent_cases.yaml) are hand-written.
+# Until the intent check exists, the mock provider answers instead of an
+# LLM, so this runs without API keys.
+description: Intent check evals
+
+prompts:
+  - file://evals/intent_prompt.txt
+
+providers:
+  - id: file://evals/mock_provider.py
+    label: mock-intent-check
+
+tests: file://evals/intent_cases.yaml
+
+defaultTest:
+  assert:
+    # Shape only. Verdict assertions come with the labeled cases.
+    - type: is-json
