@@ -69,10 +69,13 @@ Rules for AI-written code:
 - Types: `mypy .`
 - Tests: `pytest --cov`
 - Pre-commit (runs on every commit): `pre-commit run --all-files`
+- Secret scan: gitleaks runs in pre-commit on staged changes; it blocks the
+  commit if it finds a key or token.
+- Property-based tests: Hypothesis (runs as part of `pytest`).
 - LLM evals and red-team for the intent check: `npx promptfoo@0.125.1 eval`
-  (once the intent-check promptfoo config exists)
+  (config: `promptfooconfig.yaml`; mock provider until the intent check exists)
 - Install dev tools: `pip install -r requirements-dev.txt`
-- Run ruff, mypy and pytest before every commit. CI (to be set up) will
+- Run ruff, mypy and pytest before every commit. CI will
   run pytest, Semgrep and pip-audit on every PR; a red CI blocks merging.
 
 ## Always
