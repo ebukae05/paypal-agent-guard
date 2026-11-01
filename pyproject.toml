@@ -1,0 +1,19 @@
+# Tool settings only; this project is not packaged.
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+# E: style errors, F: pyflakes, I: import order, B: common bug patterns
+select = ["E", "F", "I", "B"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's Depends() is a marker, not a shared mutable default (B008).
+extend-immutable-calls = ["fastapi.Depends"]
+
+[tool.mypy]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["guard", "agent", "catalog"]

@@ -1,0 +1,29 @@
+# Runs on every git commit. Hooks call the tools installed in .venv
+# (language: system) so versions match requirements-dev.txt and they work
+# even when the venv isn't activated. Windows backslash path on purpose:
+# Windows can't launch a relative path written with forward slashes.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: "'.venv\\Scripts\\python.exe' -m ruff check"
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format
+        entry: "'.venv\\Scripts\\python.exe' -m ruff format"
+        language: system
+        types: [python]
+      - id: mypy
+        name: mypy
+        entry: "'.venv\\Scripts\\python.exe' -m mypy ."
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: pytest
+        name: pytest
+        entry: "'.venv\\Scripts\\python.exe' -m pytest -q"
+        language: system
+        pass_filenames: false
+        always_run: true
