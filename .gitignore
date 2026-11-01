@@ -13,3 +13,9 @@ __pycache__/
 
 # Coverage data from pytest --cov
 .coverage
+
+# Personal Claude Code settings (never shared)
+.claude/settings.local.json
+
+# Stop signal written by loop.sh
+STOP
