@@ -61,7 +61,12 @@ def run_tool_calls(toolbox, response, turn):
         except ToolError as e:
             print(f"         -> ERROR: {e}")
             results.append(
-                {"type": "tool_result", "tool_use_id": block.id, "content": str(e), "is_error": True}
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": str(e),
+                    "is_error": True,
+                }
             )
     return results
 

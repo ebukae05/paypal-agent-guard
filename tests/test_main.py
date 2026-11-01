@@ -21,9 +21,7 @@ class FakePayPal:
         self.capture_error = None
 
     def create_order(self, amount, currency, request_id, description):
-        self.create_calls.append(
-            {"amount": amount, "currency": currency, "request_id": request_id}
-        )
+        self.create_calls.append({"amount": amount, "currency": currency, "request_id": request_id})
         if self.create_error:
             raise self.create_error
         return {
