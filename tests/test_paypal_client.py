@@ -463,3 +463,98 @@ def test_worst_case_retry_time_fits_the_agent_timeout():
     # load_dotenv() at import time and would read .env.
     agent_timeout = 30
     assert MAX_ATTEMPTS * TIMEOUT_SECONDS + sum(BACKOFF_SECONDS) < agent_timeout
+
+
+# --- Tester additions for the retry task (gaps found by mutation testing) ---
+
+
+def test_get_503_then_success_is_retried():
+    # GETs are always safe to repeat, so a 5xx on get_order is retried.
+    server = FakePayPalServer()
+    server.replies["/v2/checkout/orders/ORDER-1"] = [unavailable()]
+    client = make_client(server)
+
+    assert client.get_order("ORDER-1") == ORDER_REPLY
+    assert len(server.calls_to("/v2/checkout/orders/ORDER-1")) == 2
+
+
+def test_connect_error_then_success_is_retried_with_same_request_id():
+    # Network errors other than timeouts (any httpx.TransportError) are retried too.
+    server = FakePayPalServer()
+    server.replies[CAPTURE] = [httpx.ConnectError("connection refused")]
+    client = make_client(server)
+
+    assert client.capture_order("ORDER-1", "req-cap") == CAPTURE_REPLY
+    ids = [r.headers["PayPal-Request-Id"] for r in server.calls_to(CAPTURE)]
+    assert ids == ["req-cap", "req-cap"]
+
+
+def test_connect_error_every_time_is_reraised_after_max_attempts():
+    server = FakePayPalServer()
+    server.replies[ORDERS] = httpx.ConnectError("connection refused")
+    client = make_client(server)
+
+    with pytest.raises(httpx.ConnectError):
+        client.create_order("1.00", "USD", "req-r", "shoes")
+
+    assert len(server.calls_to(ORDERS)) == MAX_ATTEMPTS
+
+
+def test_headers_rebuilt_per_attempt_so_expired_token_is_refreshed():
+    # expires_in=30 is inside the 60 s margin, so every header build needs a new
+    # token. If headers were built once before the loop, the retry would reuse token-1.
+    server = FakePayPalServer(expires_in=30)
+    server.replies[ORDERS] = [unavailable()]
+    client = make_client(server)
+
+    client.create_order("1.00", "USD", "req-r", "shoes")
+
+    auths = [r.headers["Authorization"] for r in server.calls_to(ORDERS)]
+    assert auths == ["Bearer token-1", "Bearer token-2"]
+
+
+@pytest.mark.parametrize(
+    "failure", [unavailable("dbg-log"), httpx.ReadTimeout("timed out")], ids=["5xx", "timeout"]
+)
+def test_retry_log_never_contains_headers_token_or_body(caplog, failure):
+    server = FakePayPalServer()
+    server.replies[ORDERS] = [failure]
+    client = make_client(server)
+
+    with caplog.at_level("WARNING", logger="guard.paypal"):
+        client.create_order("1.00", "USD", "req-log", "unique-body-marker")
+
+    retry_logs = [r for r in caplog.records if r.name == "guard.paypal"]
+    assert len(retry_logs) == 1  # the retry is logged ...
+    # ... but never with the token, the auth header, the secret or the request body.
+    for leaked in (
+        "token-1",
+        "Bearer",
+        "Authorization",
+        "fake-client-secret",
+        "unique-body-marker",
+    ):
+        assert leaked not in caplog.text
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="GAP: the OAuth token call has its own 3-attempt retry budget nested inside "
+    "the order call, so one guard request can take ~43 s, over the agent's 30 s timeout",
+)
+def test_worst_case_including_token_fetch_fits_the_agent_timeout():
+    # Simulated clock: each timed-out attempt costs TIMEOUT_SECONDS and each wait
+    # costs what the client asks for. Token: 2 timeouts then success. Order: always
+    # times out. This happens on the first purchase after start or token expiry.
+    agent_timeout = 30  # GUARD_TIMEOUT in agent/settings.py (not imported: reads .env)
+    server = FakePayPalServer()
+    server.replies[TOKEN] = [httpx.ReadTimeout("t"), httpx.ReadTimeout("t")]
+    server.replies[ORDERS] = httpx.ReadTimeout("t")
+    client = make_client(server)
+
+    with pytest.raises(httpx.TimeoutException):
+        client.create_order("1.00", "USD", "req-r", "shoes")
+
+    timed_out = 2 + len(server.calls_to(ORDERS))
+    elapsed = timed_out * TIMEOUT_SECONDS + sum(client.waits)
+    assert elapsed < agent_timeout, f"guard needs {elapsed} s in the worst case"
