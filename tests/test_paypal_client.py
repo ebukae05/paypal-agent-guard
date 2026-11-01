@@ -304,3 +304,29 @@ def test_missing_credential_is_refused(monkeypatch, name):
 
     with pytest.raises(ValueError, match=name):
         PayPalClient()
+
+
+# --- Tester additions (gaps found by mutation testing) ---
+
+
+def test_client_targets_the_paypal_sandbox_host():
+    # Uses a literal, not SANDBOX_BASE_URL, so pointing the client at the live
+    # host (https://api-m.paypal.com) fails this test.
+    client = PayPalClient()
+
+    assert str(client.http.base_url).rstrip("/") == "https://api-m.sandbox.paypal.com"
+
+
+def test_capture_retry_after_timeout_reuses_the_same_request_id():
+    server = FakePayPalServer()
+    server.replies["/v2/checkout/orders/ORDER-1/capture"] = httpx.ReadTimeout("timed out")
+    client = make_client(server)
+
+    with pytest.raises(httpx.TimeoutException):
+        client.capture_order("ORDER-1", "req-cap")
+    del server.replies["/v2/checkout/orders/ORDER-1/capture"]
+    result = client.capture_order("ORDER-1", "req-cap")
+
+    assert result == CAPTURE_REPLY
+    ids = [r.headers["PayPal-Request-Id"] for r in server.api_requests()]
+    assert ids == ["req-cap", "req-cap"]
