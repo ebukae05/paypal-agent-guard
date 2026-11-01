@@ -1,12 +1,36 @@
 {
   "permissions": {
     "allow": [
-      "Bash(.venv/Scripts/python.exe -m pytest -q)",
-      "Bash(.venv/Scripts/python.exe -m pytest -q *)",
-      "Bash(.venv/Scripts/python.exe -m pytest -v *)",
-      "Bash(.venv/Scripts/ruff check .)",
-      "mcp__terminal__read_terminal",
-      "mcp__Claude_Browser__read_network_requests"
+      "Edit",
+      "Write",
+      "Bash(pytest:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git checkout -b:*)",
+      "Bash(git switch:*)",
+      "Bash(pip install:*)",
+      "Bash(ruff:*)",
+      "Bash(mypy:*)",
+      "Bash(pre-commit:*)",
+      "Bash(npx promptfoo@0.125.1:*)",
+      "Bash(.venv/Scripts/python.exe -m ruff:*)",
+      "Bash(.venv/Scripts/python.exe -m mypy:*)",
+      "Bash(.venv/Scripts/python.exe -m pytest:*)",
+      "Bash(bash loop.sh)"
+    ],
+    "deny": [
+      "Bash(git push:*)",
+      "Bash(git merge:*)",
+      "Bash(rm -rf:*)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Edit(./.env)",
+      "Edit(./.env.*)",
+      "Edit(./loop.sh)"
     ]
   }
 }
