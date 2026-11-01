@@ -1,0 +1,53 @@
+# Checks every pull request. No secrets are used: tests fake PayPal and the LLM.
+name: CI
+
+on:
+  pull_request:
+
+# Least privilege: the workflow can read the repo and nothing else.
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      # Semgrep and pip-audit are CI-only, so they're pinned here.
+      - name: Install tools
+        run: pip install -r requirements-dev.txt semgrep==1.183.0 pip-audit==2.10.1
+
+      # "!cancelled()" runs every check even if an earlier one failed,
+      # so one red step doesn't hide the others' results.
+      - name: Lint
+        if: ${{ !cancelled() }}
+        run: ruff check .
+
+      - name: Format
+        if: ${{ !cancelled() }}
+        run: ruff format --check .
+
+      - name: Types
+        if: ${{ !cancelled() }}
+        run: mypy .
+
+      - name: Tests
+        if: ${{ !cancelled() }}
+        run: pytest --cov
+
+      - name: Semgrep (static security checks)
+        if: ${{ !cancelled() }}
+        run: semgrep scan --config p/python --error --metrics off
+
+      - name: pip-audit (known vulnerable dependencies)
+        if: ${{ !cancelled() }}
+        run: pip-audit -r requirements-dev.txt

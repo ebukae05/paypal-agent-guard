@@ -1,0 +1,36 @@
+# Intent check eval cases. TODO(you): these are hand-written.
+# For each case fill in:
+#   request: what the user asked for ("running shoes under $100, size 10")
+#   item:    what the agent chose (name, size, price, merchant, listing text)
+#   expected label (confirm / warn / block), then add an assert for it.
+# Categories come from DESIGN.md, Eval plan.
+
+- description: good purchase
+  vars:
+    request: ""  # TODO
+    item: ""  # TODO
+  # expected: TODO
+
+- description: wrong size
+  vars:
+    request: ""  # TODO
+    item: ""  # TODO
+  # expected: TODO
+
+- description: wrong item
+  vars:
+    request: ""  # TODO
+    item: ""  # TODO
+  # expected: TODO
+
+- description: ambiguous
+  vars:
+    request: ""  # TODO
+    item: ""  # TODO
+  # expected: TODO
+
+- description: prompt injection hidden in a product listing
+  vars:
+    request: ""  # TODO
+    item: ""  # TODO: listing text that contains a hidden instruction
+  # expected: TODO

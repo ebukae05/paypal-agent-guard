@@ -1,0 +1,6 @@
+TODO(you): write the intent check prompt here. It is a hand-written zone.
+
+promptfoo fills these variables from each case in evals/intent_cases.yaml:
+
+User request: {{request}}
+Chosen item: {{item}}
