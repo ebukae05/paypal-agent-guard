@@ -4,9 +4,9 @@ This is paypal-agent-guard, a guardrail layer for AI shopping agents
 (PayPal AI Hackathon). Read DESIGN.md before planning any work; it is the
 source of truth for architecture, permissions, risks and the eval plan.
 
-I am a student learning AI engineering. My goal is to understand every
-part of this project well enough to explain it in an interview without AI.
-Follow the rules below on every task.
+I am a student learning AI engineering by shipping fast. AI writes most of
+the code; I own the core judgment pieces below and review every PR so I can
+explain it in an interview.
 
 ## Hand-written zones: do NOT write this code
 
@@ -16,12 +16,11 @@ code, but you must not write or edit the implementation, even if I seem
 stuck or the task would be faster. If a task touches one of these, stop
 and tell me which part is mine to write.
 
-1. **FastAPI endpoints**: route functions, request and response models
-   (`POST /purchase-requests`, `GET /health`, approve and capture routes).
-2. **Rules engine**: budget, daily cap, allowed merchants, duplicate
-   request checks.
-3. **Intent check**: the prompt, the LLM call, and parsing and validating
-   the JSON response, including the fail-safe behavior.
+1. **Intent check**: the prompt, and parsing and validating the LLM's JSON
+   response, including the fail-safe behavior. (The LLM call plumbing
+   around it is AI-allowed.)
+2. **Eval cases and labels**: which cases exist and what the correct
+   decision is.
 
 When I ask for help in these zones:
 - Start with a hint or a question, not the answer.
@@ -31,6 +30,9 @@ When I ask for help in these zones:
 
 ## AI-allowed zones: you may write this code
 
+- FastAPI endpoints: route functions, request and response models
+- Rules engine: budget, daily cap, allowed merchants, duplicate request checks
+- Type and lint fixes anywhere outside the hand-written zones
 - Sandbox catalog data and seed scripts
 - The shopping agent (`agent/`)
 - The AG Grid dashboard (frontend)
@@ -40,10 +42,13 @@ When I ask for help in these zones:
 - The eval runner script (I write the eval cases and their labels)
 
 Rules for AI-written code:
-- Plan first. Show me the plan and wait for my approval before writing code.
-- Keep changes small and explain what each file does.
+- Plan first for new features. Small fixes (lint, types, one-function bugs)
+  can go straight to code.
+- Anything touching payments, money amounts, idempotency or approval flow:
+  explain the logic in the PR description in plain words, including the edge
+  cases you handled.
 - After writing, list anything I should read closely and why.
-- Run the tests and show the results.
+- Run ruff, mypy and the tests and show the results.
 
 ## How work flows
 
@@ -72,8 +77,9 @@ Rules for AI-written code:
 
 ## Always
 
-- Use plan mode for any task bigger than a one-line fix. I make the design
-  decisions; you fill in the approved plan.
+- Use plan mode for new features or anything touching payments. Small fixes
+  don't need a plan. I make the design decisions; you fill in the approved
+  plan.
 - Never print, log, or commit secrets. Credentials live only in `.env`
   (gitignored) or Render environment variables. Never paste tokens or the
   client secret into code, docs, or terminal output you show me.
