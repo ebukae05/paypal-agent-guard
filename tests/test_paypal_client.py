@@ -8,7 +8,14 @@ import httpx
 import pytest
 
 from guard import paypal_client
-from guard.paypal_client import SANDBOX_BASE_URL, PayPalClient, PayPalError
+from guard.paypal_client import (
+    BACKOFF_SECONDS,
+    MAX_ATTEMPTS,
+    SANDBOX_BASE_URL,
+    TIMEOUT_SECONDS,
+    PayPalClient,
+    PayPalError,
+)
 
 ORDER_REPLY = {
     "id": "ORDER-1",
@@ -28,21 +35,27 @@ def fake_env(monkeypatch):
 
 
 class FakePayPalServer:
-    """Records requests and answers like PayPal. Override replies per path to fail."""
+    """Records requests and answers like PayPal. Override replies per path to fail.
+
+    A reply can be one httpx.Response or exception (used for every call), or a
+    list of them consumed in order; once the list is empty the normal reply is used.
+    """
 
     def __init__(self, expires_in=32400):
         self.requests = []
         self.expires_in = expires_in
         self.token_count = 0
-        self.replies = {}  # path -> httpx.Response, or an exception to raise
+        self.replies = {}  # path -> httpx.Response, exception, or a list of them
 
     def __call__(self, request):
         self.requests.append(request)
         path = request.url.path
-        if path in self.replies:
-            reply = self.replies[path]
-            if isinstance(reply, Exception):
-                raise reply
+        reply = self.replies.get(path)
+        if isinstance(reply, list):
+            reply = reply.pop(0) if reply else None
+        if isinstance(reply, Exception):
+            raise reply
+        if reply is not None:
             return reply
         if path == "/v1/oauth2/token":
             self.token_count += 1
@@ -61,10 +74,16 @@ class FakePayPalServer:
     def api_requests(self):
         return [r for r in self.requests if r.url.path != "/v1/oauth2/token"]
 
+    def calls_to(self, path):
+        return [r for r in self.requests if r.url.path == path]
+
 
 def make_client(server):
     client = PayPalClient()
     client.http = httpx.Client(base_url=SANDBOX_BASE_URL, transport=httpx.MockTransport(server))
+    # Record retry waits instead of sleeping, so tests stay fast.
+    client.waits = []
+    client._sleep = client.waits.append
     return client
 
 
@@ -217,6 +236,7 @@ def test_create_error_without_details_has_no_issue():
     assert exc_info.value.name == "INTERNAL_SERVER_ERROR"
     assert exc_info.value.issue is None
     assert exc_info.value.debug_id == "dbg-500"
+    assert len(server.api_requests()) == MAX_ATTEMPTS  # 5xx is retried, then raised
 
 
 def test_oauth_error_becomes_paypal_error():
@@ -247,6 +267,7 @@ def test_non_json_error_body_becomes_unknown_paypal_error():
     assert exc_info.value.status_code == 502
     assert exc_info.value.name == "UNKNOWN"
     assert exc_info.value.debug_id is None
+    assert len(server.api_requests()) == MAX_ATTEMPTS
 
 
 def test_error_message_never_contains_secret_or_token():
@@ -267,7 +288,7 @@ def test_error_message_never_contains_secret_or_token():
 
 
 def test_client_configures_a_timeout():
-    assert PayPalClient().http.timeout == httpx.Timeout(30)
+    assert PayPalClient().http.timeout == httpx.Timeout(TIMEOUT_SECONDS)
 
 
 def test_create_timeout_propagates_as_httpx_timeout():
@@ -278,6 +299,8 @@ def test_create_timeout_propagates_as_httpx_timeout():
     with pytest.raises(httpx.TimeoutException):
         client.create_order("1.00", "USD", "req-1", "shoes")
 
+    assert len(server.api_requests()) == MAX_ATTEMPTS
+
 
 def test_capture_timeout_propagates_as_httpx_timeout():
     server = FakePayPalServer()
@@ -286,6 +309,8 @@ def test_capture_timeout_propagates_as_httpx_timeout():
 
     with pytest.raises(httpx.TimeoutException):
         client.capture_order("ORDER-1", "req-1")
+
+    assert len(server.api_requests()) == MAX_ATTEMPTS
 
 
 # --- Configuration guards ---
@@ -329,4 +354,112 @@ def test_capture_retry_after_timeout_reuses_the_same_request_id():
 
     assert result == CAPTURE_REPLY
     ids = [r.headers["PayPal-Request-Id"] for r in server.api_requests()]
-    assert ids == ["req-cap", "req-cap"]
+    # The first call retries MAX_ATTEMPTS times, the second succeeds at once.
+    assert ids == ["req-cap"] * (MAX_ATTEMPTS + 1)
+
+
+# --- Retry on 5xx and timeouts (DESIGN.md, Risks: PayPal API error) ---
+
+ORDERS = "/v2/checkout/orders"
+CAPTURE = "/v2/checkout/orders/ORDER-1/capture"
+TOKEN = "/v1/oauth2/token"
+
+
+def unavailable(debug_id="dbg-503"):
+    return httpx.Response(503, json={"name": "SERVICE_UNAVAILABLE", "debug_id": debug_id})
+
+
+def test_create_503_then_success_retries_with_same_request_id():
+    server = FakePayPalServer()
+    server.replies[ORDERS] = [unavailable()]
+    client = make_client(server)
+
+    order = client.create_order("1.00", "USD", "req-r", "shoes")
+
+    assert order == ORDER_REPLY
+    ids = [r.headers["PayPal-Request-Id"] for r in server.calls_to(ORDERS)]
+    assert ids == ["req-r", "req-r"]
+
+
+def test_create_503_every_time_raises_paypal_error_after_max_attempts():
+    server = FakePayPalServer()
+    server.replies[ORDERS] = unavailable("dbg-x")
+    client = make_client(server)
+
+    with pytest.raises(PayPalError) as exc_info:
+        client.create_order("1.00", "USD", "req-r", "shoes")
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.debug_id == "dbg-x"
+    assert len(server.calls_to(ORDERS)) == 3
+
+
+def test_capture_timeout_every_time_raises_timeout_after_max_attempts():
+    server = FakePayPalServer()
+    server.replies[CAPTURE] = httpx.ReadTimeout("timed out")
+    client = make_client(server)
+
+    with pytest.raises(httpx.TimeoutException):
+        client.capture_order("ORDER-1", "req-cap")
+
+    assert len(server.calls_to(CAPTURE)) == 3
+
+
+@pytest.mark.parametrize("status", [422, 409])
+def test_4xx_is_never_retried(status):
+    server = FakePayPalServer()
+    server.replies[CAPTURE] = httpx.Response(
+        status,
+        json={"name": "UNPROCESSABLE_ENTITY", "details": [{"issue": "ORDER_NOT_APPROVED"}]},
+    )
+    client = make_client(server)
+
+    with pytest.raises(PayPalError) as exc_info:
+        client.capture_order("ORDER-1", "req-cap")
+
+    assert exc_info.value.status_code == status
+    assert len(server.calls_to(CAPTURE)) == 1
+    assert client.waits == []
+
+
+def test_token_503_then_success_is_retried():
+    server = FakePayPalServer()
+    server.replies[TOKEN] = [unavailable()]
+    client = make_client(server)
+
+    client.get_order("ORDER-1")
+
+    assert len(server.calls_to(TOKEN)) == 2
+    (request,) = server.api_requests()
+    assert request.headers["Authorization"] == "Bearer token-1"
+
+
+def test_waits_between_attempts_follow_backoff():
+    server = FakePayPalServer()
+    server.replies[ORDERS] = unavailable()
+    client = make_client(server)
+
+    with pytest.raises(PayPalError):
+        client.create_order("1.00", "USD", "req-r", "shoes")
+
+    assert client.waits == [0.5, 1.0]
+
+
+def test_post_without_request_id_is_not_retried():
+    # A POST with no PayPal-Request-Id could act twice if repeated, so it gets one try.
+    server = FakePayPalServer()
+    server.replies[ORDERS] = unavailable()
+    client = make_client(server)
+
+    with pytest.raises(PayPalError):
+        client._send("POST", ORDERS, json={})
+
+    assert len(server.calls_to(ORDERS)) == 1
+    assert client.waits == []
+
+
+def test_worst_case_retry_time_fits_the_agent_timeout():
+    # 30 = GUARD_TIMEOUT in agent/settings.py. Not imported: that module calls
+    # load_dotenv() at import time and would read .env.
+    agent_timeout = 30
+    assert MAX_ATTEMPTS * TIMEOUT_SECONDS + sum(BACKOFF_SECONDS) < agent_timeout
