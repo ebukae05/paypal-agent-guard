@@ -64,9 +64,11 @@ risk score. Never cut rules, intent check, audit log or evals.
 - [ ] [AI] README: problem, architecture diagram, eval table, how to run, tools used
 - [ ] [AI] Stretch, only if everything above is done: guard as an MCP tool
 - [ ] [CHECK] Feature freeze; final eval run; I record the demo and submit by Nov 12 noon
+- [x] [AI] Progress dashboard: `scripts/progress.py` writes progress.html from TASKS.md and git. Evidence: tests/test_progress.py
 
 ## Progress notes
 
 (Claude appends one line per finished task: date, task, what changed, test result.)
 - 2026-11-01: TASKS.md created and synced with the code; setup, M1 pieces and idempotency ticked with evidence.
 - 2026-11-01: Live M1 run passed: agent → guard → sandbox buyer approval → capture COMPLETED (order 9RH81556VE266902J, capture 81W82564R0244494G). ruff, mypy, pytest green.
+- 2026-11-01: Progress dashboard: scripts/progress.py (stdlib) renders progress.html with ring, milestone bars, countdown, burndown, task board, notes and CI status; tests/test_progress.py added.

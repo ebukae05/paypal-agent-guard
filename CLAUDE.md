@@ -75,6 +75,7 @@ Rules for AI-written code:
 - LLM evals and red-team for the intent check: `npx promptfoo@0.125.1 eval`
   (config: `promptfooconfig.yaml`; mock provider until the intent check exists)
 - Install dev tools: `pip install -r requirements-dev.txt`
+- Progress dashboard: `python scripts/progress.py && start progress.html`
 - Run ruff, mypy and pytest before every commit. CI (`.github/workflows/ci.yml`)
   runs ruff, mypy, pytest, Semgrep and pip-audit on every PR; a red CI blocks
   merging.
