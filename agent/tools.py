@@ -86,7 +86,7 @@ class ToolBox:
         try:
             products = search_catalog(query, max_price=max_price, size=size)
         except ValueError as e:
-            raise ToolError(str(e))
+            raise ToolError(str(e)) from e
         return json.dumps(products)
 
     def request_purchase(self, product_id):
@@ -95,7 +95,9 @@ class ToolBox:
 
         product = next((p for p in load_products() if p["product_id"] == product_id), None)
         if product is None:
-            raise ToolError(f"Unknown product_id {product_id!r}. Use a product_id from search results.")
+            raise ToolError(
+                f"Unknown product_id {product_id!r}. Use a product_id from search results."
+            )
 
         if self.locked_product_id is None:
             self.locked_product_id = product_id
@@ -114,7 +116,7 @@ class ToolBox:
             result = self.guard_post(payload)
         except GuardError as e:
             # The failure goes back to the model; the lock and request_id stay.
-            raise ToolError(str(e))
+            raise ToolError(str(e)) from e
 
         self.purchase = {
             "request_id": result["request_id"],

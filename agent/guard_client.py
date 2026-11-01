@@ -18,10 +18,10 @@ def post_purchase(payload):
     url = f"{GUARD_URL}/purchase-requests"
     try:
         response = httpx.post(url, json=payload, timeout=GUARD_TIMEOUT)
-    except httpx.TimeoutException:
-        raise GuardError("The guard timed out. Retrying the same product is safe.")
-    except httpx.TransportError:
-        raise GuardError(f"Could not reach the guard at {GUARD_URL}.")
+    except httpx.TimeoutException as e:
+        raise GuardError("The guard timed out. Retrying the same product is safe.") from e
+    except httpx.TransportError as e:
+        raise GuardError(f"Could not reach the guard at {GUARD_URL}.") from e
 
     if response.status_code != 200:
         try:
