@@ -18,7 +18,7 @@ risk score. Never cut rules, intent check, audit log or evals.
 - [x] [AI] Shopping agent loop with search and request_purchase tools. Evidence: `agent/`, tests/test_agent.py
 - [x] [AI] Idempotency: a retry never double-charges. Evidence: test_capture_twice_calls_paypal_once, test_capture_retry_after_failure_sends_same_key, test_same_request_id_different_payload_is_409, test_guard_timeout_then_same_product_retry_reuses_request_id
 - [x] [AI] Dev tooling and CI: ruff, mypy, pytest-cov, pre-commit + gitleaks, ci.yml, promptfoo scaffold (PR #1)
-- [ ] [CHECK] Live M1 run: `python -m agent.run "..."` → guard → approve as sandbox buyer → capture COMPLETED
+- [x] [CHECK] Live M1 run: `python -m agent.run "..."` → guard → approve as sandbox buyer → capture COMPLETED. Evidence: shoe-001 ($89.99), sandbox order 9RH81556VE266902J, capture 81W82564R0244494G COMPLETED
 
 ## Hardening what exists
 
@@ -69,3 +69,4 @@ risk score. Never cut rules, intent check, audit log or evals.
 
 (Claude appends one line per finished task: date, task, what changed, test result.)
 - 2026-11-01: TASKS.md created and synced with the code; setup, M1 pieces and idempotency ticked with evidence.
+- 2026-11-01: Live M1 run passed: agent → guard → sandbox buyer approval → capture COMPLETED (order 9RH81556VE266902J, capture 81W82564R0244494G). ruff, mypy, pytest green.
