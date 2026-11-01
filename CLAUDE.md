@@ -32,6 +32,7 @@ When I ask for help in these zones:
 ## AI-allowed zones: you may write this code
 
 - Sandbox catalog data and seed scripts
+- The shopping agent (`agent/`)
 - The AG Grid dashboard (frontend)
 - Boilerplate: config, settings, database setup, Render deploy files
 - Test scaffolding (I decide what each test checks)
@@ -43,6 +44,31 @@ Rules for AI-written code:
 - Keep changes small and explain what each file does.
 - After writing, list anything I should read closely and why.
 - Run the tests and show the results.
+
+## How work flows
+
+- TASKS.md is the task list and the memory between sessions. Work top to
+  bottom, one task at a time. Tags: [AI] you may implement, [YOU]
+  hand-written zone (hints only), [CHECK] stop and wait for me.
+- After each finished task: tick the box, add one line to Progress notes,
+  commit.
+- If a test fails 3 times in a row, stop and explain what's going wrong.
+- Dev team agents live in .claude/agents (architect, engineer, tester,
+  reviewer). Hand [AI] tasks to the engineer, then the tester; use the
+  reviewer before a PR.
+- I merge. Agents never push to main or merge.
+
+## Commands
+
+- Lint and format: `ruff check .` and `ruff format .`
+- Types: `mypy .`
+- Tests: `pytest --cov`
+- Pre-commit (runs on every commit): `pre-commit run --all-files`
+- LLM evals and red-team for the intent check: `npx promptfoo@0.125.1 eval`
+  (once the intent-check promptfoo config exists)
+- Install dev tools: `pip install -r requirements-dev.txt`
+- Run ruff, mypy and pytest before every commit. CI (to be set up) will
+  run pytest, Semgrep and pip-audit on every PR; a red CI blocks merging.
 
 ## Always
 
@@ -56,3 +82,7 @@ Rules for AI-written code:
 - Explain any new concept (a library, a pattern, an API behavior) in one or
   two sentences when you first use it.
 - Python is the main language. Prefer simple, readable code over clever code.
+- Once deployed (M3), every merge to main auto-deploys on Render, so main
+  must always pass CI. Use sandbox credentials only, never live PayPal keys.
+- Never capture a payment without the human approval step. Every retry
+  reuses the same PayPal-Request-Id.
