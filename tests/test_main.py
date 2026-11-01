@@ -132,3 +132,49 @@ def test_capture_retry_after_failure_sends_same_key(fake):
     assert client.post("/purchase-requests/req-1/capture").status_code == 200
     keys = [call["request_id"] for call in fake.capture_calls]
     assert keys == ["req-1-capture", "req-1-capture"]
+
+
+# --- Failure status after PayPal retries run out (DESIGN.md, Risks) ---
+
+
+def test_create_failure_marks_record_then_same_request_id_succeeds(fake):
+    fake.create_error = PayPalError(503, "SERVICE_UNAVAILABLE", "down", "dbg-503")
+    response = client.post("/purchase-requests", json=purchase())
+    assert response.status_code == 502
+    record = PURCHASES["req-1"]
+    assert record["status"] == "create_failed"
+    assert "dbg-503" in record["last_error"]
+
+    fake.create_error = None
+    response = client.post("/purchase-requests", json=purchase())
+    assert response.status_code == 200
+    assert record["status"] == "order_created"
+    assert record["last_error"] is None
+    assert record["order_id"] == response.json()["order_id"] == "ORDER-req-1"
+    assert {call["request_id"] for call in fake.create_calls} == {"req-1"}
+
+
+def test_capture_timeout_marks_record_then_later_capture_succeeds(fake):
+    client.post("/purchase-requests", json=purchase())
+    fake.capture_error = httpx.ReadTimeout("timed out")
+    assert client.post("/purchase-requests/req-1/capture").status_code == 504
+    assert PURCHASES["req-1"]["status"] == "capture_failed"
+
+    fake.capture_error = None
+    assert client.post("/purchase-requests/req-1/capture").status_code == 200
+    assert client.post("/purchase-requests/req-1/capture").status_code == 200
+    assert PURCHASES["req-1"]["status"] == "captured"
+    assert PURCHASES["req-1"]["last_error"] is None
+    keys = [call["request_id"] for call in fake.capture_calls]
+    # One failed attempt, then exactly one successful capture; same key both times.
+    assert keys == ["req-1-capture", "req-1-capture"]
+
+
+def test_capture_not_approved_does_not_mark_failed(fake):
+    client.post("/purchase-requests", json=purchase())
+    fake.capture_error = PayPalError(
+        422, "UNPROCESSABLE_ENTITY", "not approved", "debug-1", "ORDER_NOT_APPROVED"
+    )
+    assert client.post("/purchase-requests/req-1/capture").status_code == 409
+    assert PURCHASES["req-1"]["status"] == "order_created"
+    assert PURCHASES["req-1"]["last_error"] is None

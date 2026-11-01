@@ -32,7 +32,10 @@ CONFLICT_ISSUES = {
     "ORDER_ALREADY_CAPTURED": "This order was already captured",
 }
 
-# request_id -> {"fingerprint", "order_id", "approval_url", "capture"}.
+# request_id -> {"fingerprint", "order_id", "approval_url", "capture", "status", "last_error"}.
+# status: "pending" -> "order_created" -> "captured", or "create_failed" /
+# "capture_failed" after PayPal kept failing (5xx, timeout, network). Failed is
+# not final: the same request_id can try again, and success overwrites it.
 # In memory for M1; SQLite and the audit log replace this later.
 PURCHASES: dict[str, dict[str, Any]] = {}
 
@@ -95,6 +98,21 @@ def fingerprint(purchase):
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def mark_failed_if_retryable(record, status, exc):
+    """Record a PayPal failure that survived the client's retries.
+
+    Only 5xx and network errors count; 4xx errors such as ORDER_NOT_APPROVED
+    mean "wrong order state" and leave the status alone.
+    """
+    retryable = isinstance(exc, httpx.TransportError) or (
+        isinstance(exc, PayPalError) and exc.status_code >= 500
+    )
+    if retryable:
+        record["status"] = status
+        # str(exc) has status, name, issue and debug_id only; never headers or tokens.
+        record["last_error"] = str(exc)
+
+
 def describe(item):
     size = f" (size {item.size})" if item.size else ""
     return f"{item.name}{size} from {item.merchant}"[:MAX_DESCRIPTION]
@@ -112,7 +130,14 @@ def create_purchase(purchase: PurchaseRequest, paypal: PayPalClient = Depends(ge
     fp = fingerprint(purchase)
     record = PURCHASES.setdefault(
         purchase.request_id,
-        {"fingerprint": fp, "order_id": None, "approval_url": None, "capture": None},
+        {
+            "fingerprint": fp,
+            "order_id": None,
+            "approval_url": None,
+            "capture": None,
+            "status": "pending",
+            "last_error": None,
+        },
     )
     if record["fingerprint"] != fp:
         raise HTTPException(409, "request_id was already used for a different purchase")
@@ -124,11 +149,17 @@ def create_purchase(purchase: PurchaseRequest, paypal: PayPalClient = Depends(ge
 
     if record["order_id"] is None:
         item = purchase.item
-        order = paypal.create_order(
-            f"{item.price:.2f}", CURRENCY, purchase.request_id, describe(item)
-        )
+        try:
+            order = paypal.create_order(
+                f"{item.price:.2f}", CURRENCY, purchase.request_id, describe(item)
+            )
+        except (PayPalError, httpx.TransportError) as exc:
+            mark_failed_if_retryable(record, "create_failed", exc)
+            raise  # the exception handlers below turn it into 502/504
         record["order_id"] = order["id"]
         record["approval_url"] = approval_link(order)
+        record["status"] = "order_created"
+        record["last_error"] = None
 
     return PurchaseResponse(
         request_id=purchase.request_id,
@@ -148,7 +179,11 @@ def capture_purchase(request_id: str, paypal: PayPalClient = Depends(get_paypal)
     if record["capture"] is None:
         # Deterministic key: retries, concurrent calls and calls after a restart
         # all send the same PayPal-Request-Id, so PayPal charges at most once.
-        result = paypal.capture_order(record["order_id"], f"{request_id}-capture")
+        try:
+            result = paypal.capture_order(record["order_id"], f"{request_id}-capture")
+        except (PayPalError, httpx.TransportError) as exc:
+            mark_failed_if_retryable(record, "capture_failed", exc)
+            raise  # the exception handlers below turn it into 409/502/504
         captures = result["purchase_units"][0].get("payments", {}).get("captures", [])
         record["capture"] = CaptureResponse(
             request_id=request_id,
@@ -156,6 +191,8 @@ def capture_purchase(request_id: str, paypal: PayPalClient = Depends(get_paypal)
             status=result["status"],
             capture_id=captures[0]["id"] if captures else None,
         )
+        record["status"] = "captured"
+        record["last_error"] = None
     return record["capture"]
 
 
