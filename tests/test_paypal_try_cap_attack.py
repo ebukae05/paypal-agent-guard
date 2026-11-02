@@ -466,9 +466,9 @@ class StillRunning(AssertionError):
 @pytest.mark.xfail(
     strict=True,
     raises=StillRunning,
-    reason="Tester finding: the code comment and plan say an abandoned try 'ends by its "
-    "httpx timeouts', but a dripping body never trips a per-phase timeout, so the "
-    "abandoned thread (and its pooled connection) keeps running until the server stops.",
+    reason="Known limit (TASKS.md: stop an abandoned dripping try): a dripping body never "
+    "trips a per-phase timeout, so the abandoned thread (and its pooled connection) keeps "
+    "running until the server stops.",
 )
 def test_abandoned_dripping_try_thread_ends_soon_after_the_cut_off(drip_server, monkeypatch):
     monkeypatch.setattr(paypal_client, "TIMEOUT_SECONDS", LIMIT)

@@ -194,7 +194,9 @@ class PayPalClient:
                 outcome["error"] = exc
 
         # A daemon thread doesn't keep Python running at exit, so a stuck call can't
-        # block shutdown. An abandoned try ends by its httpx timeouts; its result is dropped.
+        # block shutdown. An abandoned try's result is dropped. It ends when httpx times
+        # out, except a body that keeps dripping: then it runs (and holds a pooled
+        # connection) until PayPal stops. Tracked in TASKS.md.
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
         thread.join(limit)
