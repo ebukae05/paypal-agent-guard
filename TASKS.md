@@ -24,6 +24,8 @@ risk score. Never cut rules, intent check, audit log or evals.
 
 - [x] [AI] Tests for guard/paypal_client.py (idempotency, declines, timeouts). Done when: mocked HTTP tests cover token caching, PayPal-Request-Id on create and capture, error → PayPalError with debug_id, timeout; coverage of the file well above 38%. Evidence: tests/test_paypal_client.py (21 tests), 99% coverage, tester PASS (3019eaf, 0f471cf)
 - [ ] [AI] PayPal 5xx/timeout: retry with the same request ID, then mark the request failed. Done when: tests for retry-then-success and retry-then-fail
+- [ ] [AI] Cap each whole PayPal try, not just each read: httpx's timeout is per phase (connect, write, each read gap), so a slow-dripping response can take longer than TIMEOUT_SECONDS per try. Done when: a test with a slow-dripping mock response proves one try never exceeds its time limit
+- [ ] [AI] Faster tests: inject the httpx.Client into PayPalClient so tests stop loading SSL certificates in every test (~0.45 s each). Done when: client tests build no real httpx.Client and the suite time drops
 
 ## Rules
 
