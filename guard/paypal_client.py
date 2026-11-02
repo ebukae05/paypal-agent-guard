@@ -6,6 +6,7 @@ This module never prints or logs the client secret or the access token.
 
 import logging
 import os
+import threading
 import time
 
 import httpx
@@ -26,13 +27,14 @@ PAYPAL_BUDGET_SECONDS = 20.0
 MIN_TRY_SECONDS = 2.0
 # What is guaranteed: no try (token or order) starts later than
 # PAYPAL_BUDGET_SECONDS - MIN_TRY_SECONDS (18 s) after the public method is
-# called, so no new PayPal request starts after the agent's 30 s GUARD_TIMEOUT
-# (agent/settings.py). A try already in flight can run past its timeout: httpx
-# timeouts apply per phase (connect, write, each gap between reads), so a try can
-# take roughly 2x the time left, and a response that drips in slowly has no upper
-# bound. That is tracked as its own task in TASKS.md. If the agent gives up while
-# a request is in flight, that is safe: its retry reuses the same
-# PayPal-Request-Id, so PayPal returns the stored result instead of acting twice.
+# called, and every try is cut off by wall clock at its time limit (see
+# _request_with_cap), so each public method returns within PAYPAL_BUDGET_SECONDS
+# (20 s), before the agent's 30 s GUARD_TIMEOUT (agent/settings.py). httpx alone
+# can't promise that: its timeouts apply per phase (connect, write, each gap
+# between reads), so a response that drips in slowly would never time out.
+# A try cut off this way may still succeed at PayPal. That is safe: the retry
+# (ours or the agent's) reuses the same PayPal-Request-Id, so PayPal returns the
+# stored result instead of acting twice.
 
 logger = logging.getLogger("guard.paypal")
 
@@ -131,9 +133,10 @@ class PayPalClient:
         4xx responses are never retried. When attempts or time run out, the last
         5xx becomes a PayPalError and the last network error is re-raised as is.
 
-        All tries (and any token fetch) must finish by `deadline`, a value of
-        self._clock(). Each try's timeout shrinks to the time left, and a retry
-        only starts if its backoff wait plus MIN_TRY_SECONDS still fits.
+        All tries (and any token fetch) finish by `deadline`, a value of
+        self._clock(), so _send returns by its deadline. Each try is cut off at
+        the time left (at most TIMEOUT_SECONDS), and a retry only starts if its
+        backoff wait plus MIN_TRY_SECONDS still fits.
         """
         if deadline is None:
             deadline = self._new_deadline()
@@ -157,8 +160,8 @@ class PayPalClient:
                 # A token refetch before this retry ate the time left: stop here.
                 self._give_up(last_failure)
             try:
-                response = self.http.request(
-                    method, url, headers=headers, timeout=min(TIMEOUT_SECONDS, left), **kwargs
+                response = self._request_with_cap(
+                    min(TIMEOUT_SECONDS, left), method, url, headers=headers, **kwargs
                 )
             except httpx.TransportError as exc:  # includes httpx.TimeoutException
                 if not self._retry_fits(attempt, attempts, deadline):
@@ -173,6 +176,33 @@ class PayPalClient:
             self._check(response)
             return response
         raise AssertionError("unreachable: the loop always returns or raises")
+
+    def _request_with_cap(self, limit, method, url, **kwargs):
+        """Send one try and give up after `limit` seconds of real time, whatever happens.
+
+        httpx's timeout only limits each phase, so the request runs in a thread and
+        we stop waiting for it at `limit`. A finished try returns its response or
+        re-raises its exception unchanged; an overrun raises httpx.TimeoutException,
+        so the retry loop and main.py treat it like any other timeout.
+        """
+        outcome = {}
+
+        def run():
+            try:
+                outcome["response"] = self.http.request(method, url, timeout=limit, **kwargs)
+            except BaseException as exc:  # handed to the caller below
+                outcome["error"] = exc
+
+        # A daemon thread doesn't keep Python running at exit, so a stuck call can't
+        # block shutdown. An abandoned try ends by its httpx timeouts; its result is dropped.
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join(limit)
+        if thread.is_alive():
+            raise httpx.TimeoutException(f"PayPal try took longer than {limit:.1f} s")
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["response"]
 
     def _retry_fits(self, attempt, attempts, deadline):
         """True if another try is allowed and its wait plus a real try fit in the time left."""
