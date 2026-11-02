@@ -9,7 +9,9 @@ import pytest
 
 from guard import paypal_client
 from guard.paypal_client import (
+    BACKOFF_SECONDS,
     MAX_ATTEMPTS,
+    MIN_TRY_SECONDS,
     PAYPAL_BUDGET_SECONDS,
     SANDBOX_BASE_URL,
     TIMEOUT_SECONDS,
@@ -613,3 +615,192 @@ def test_worst_case_including_token_fetch_fits_the_agent_timeout():
     assert len(server.calls_to(ORDERS)) >= 1  # the order call was still tried
     elapsed = client.clock.now
     assert elapsed <= PAYPAL_BUDGET_SECONDS < agent_timeout, f"guard needs {elapsed} s"
+
+
+# --- One time budget per guard request (token fetch and order tries share it) ---
+
+
+def test_token_expiring_during_retries_is_refetched_within_the_same_deadline():
+    # Token fetch takes 4 s, each order try 5 s. The first order try fails with a
+    # 503 and the token runs out at that moment, so the retry must fetch token-2
+    # first. That fetch uses the same deadline, so the second order try only gets
+    # the time that is left: 20 - 13.5 = 6.5 s instead of 8 s.
+    server = FakePayPalServer()
+    client = make_client(server)
+
+    def expire_token_and_fail(request):
+        client._token_expires_at = 0.0
+        return unavailable()
+
+    server.delays[TOKEN] = 4.0
+    server.delays[ORDERS] = 5.0
+    server.replies[ORDERS] = [expire_token_and_fail]
+
+    assert client.create_order("1.00", "USD", "req-exp", "shoes") == ORDER_REPLY
+
+    assert server.token_count == 2
+    orders = server.calls_to(ORDERS)
+    assert [r.headers["PayPal-Request-Id"] for r in orders] == ["req-exp", "req-exp"]
+    assert [r.headers["Authorization"] for r in orders] == ["Bearer token-1", "Bearer token-2"]
+    assert server.timeouts == [
+        (TOKEN, 0.0, TIMEOUT_SECONDS),
+        (ORDERS, 4.0, TIMEOUT_SECONDS),
+        (TOKEN, 9.5, TIMEOUT_SECONDS),
+        (ORDERS, 13.5, 6.5),
+    ]
+    assert client.clock.now <= PAYPAL_BUDGET_SECONDS
+
+
+def test_budget_running_out_stops_timeouts_early_with_the_last_error():
+    # Token: one 8 s timeout, wait 0.5 s, then success (8.5 s used). Order: try 1
+    # times out after 8 s (16.5 s), wait 0.5 s, try 2 gets the 3 s left and times
+    # out at 20 s. A third try (wait 1 s + MIN_TRY_SECONDS) no longer fits.
+    server = FakePayPalServer()
+    server.replies[TOKEN] = [httpx.ReadTimeout("token timed out")]
+    server.replies[ORDERS] = httpx.ReadTimeout("order timed out")
+    client = make_client(server)
+
+    with pytest.raises(httpx.ReadTimeout, match="order timed out"):
+        client.create_order("1.00", "USD", "req-b", "shoes")
+
+    orders = server.calls_to(ORDERS)
+    assert len(orders) == 2 < MAX_ATTEMPTS
+    assert [r.headers["PayPal-Request-Id"] for r in orders] == ["req-b", "req-b"]
+    assert client.waits == [BACKOFF_SECONDS[0], BACKOFF_SECONDS[0]]  # token retry, order retry
+    assert client.clock.now == PAYPAL_BUDGET_SECONDS
+
+
+def test_budget_running_out_stops_5xx_early_with_paypal_error_and_debug_id():
+    # Token 6 s, each order try 6 s and a 503. After try 2 (18.5 s) only 1.5 s is
+    # left, less than the next wait plus MIN_TRY_SECONDS, so the 503 is raised.
+    server = FakePayPalServer()
+    server.delays[TOKEN] = 6.0
+    server.delays[ORDERS] = 6.0
+    server.replies[ORDERS] = unavailable("dbg-late")
+    client = make_client(server)
+
+    with pytest.raises(PayPalError) as exc_info:
+        client.create_order("1.00", "USD", "req-b", "shoes")
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.debug_id == "dbg-late"
+    assert len(server.calls_to(ORDERS)) == 2 < MAX_ATTEMPTS
+    assert client.clock.now <= PAYPAL_BUDGET_SECONDS
+
+
+def test_per_try_timeout_shrinks_to_the_time_left():
+    # Token: 2 timeouts then success; order: always times out (the 43 s case).
+    server = FakePayPalServer()
+    server.replies[TOKEN] = [httpx.ReadTimeout("t"), httpx.ReadTimeout("t")]
+    server.replies[ORDERS] = httpx.ReadTimeout("t")
+    client = make_client(server)
+
+    with pytest.raises(httpx.TimeoutException):
+        client.create_order("1.00", "USD", "req-t", "shoes")
+
+    for path, sent_at, timeout in server.timeouts:
+        left = PAYPAL_BUDGET_SECONDS - sent_at  # the call started at time 0
+        assert timeout == min(TIMEOUT_SECONDS, left), (path, sent_at, timeout)
+    assert server.timeouts == [
+        (TOKEN, 0.0, 8.0),
+        (TOKEN, 8.5, 8.0),
+        (TOKEN, 17.5, 2.5),
+        (ORDERS, 17.5, 2.5),
+    ]
+
+
+def test_cached_token_uses_no_budget_and_each_call_gets_a_fresh_deadline():
+    server = FakePayPalServer()
+    server.delays[TOKEN] = 7.0
+    client = make_client(server)
+    client.get_order("ORDER-1")  # fetches and caches the token (7 s)
+
+    client.create_order("1.00", "USD", "req-c", "shoes")
+
+    (path, _, timeout) = server.timeouts[-1]
+    assert path == ORDERS
+    assert timeout == TIMEOUT_SECONDS  # the earlier call's time does not carry over
+    assert server.token_count == 1
+
+
+def test_no_time_for_the_first_try_raises_timeout_without_sending():
+    # Token: 2 timeouts, then success after 1 s at 18.5 s. Only 1.5 s is left,
+    # less than MIN_TRY_SECONDS, so the order is never sent and the call fails
+    # like a timeout (the route answers 504 and marks the record failed).
+    server = FakePayPalServer()
+    server.replies[TOKEN] = [httpx.ReadTimeout("t"), httpx.ReadTimeout("t")]
+    server.delays[TOKEN] = 1.0
+    client = make_client(server)
+
+    with pytest.raises(httpx.TimeoutException, match="budget used up"):
+        client.create_order("1.00", "USD", "req-n", "shoes")
+
+    assert server.token_count == 1  # the token did arrive ...
+    assert server.calls_to(ORDERS) == []  # ... but the order was never sent
+    assert PAYPAL_BUDGET_SECONDS - client.clock.now < MIN_TRY_SECONDS
+
+
+def test_no_time_for_the_first_try_without_a_token_fetch():
+    server = FakePayPalServer()
+    client = make_client(server)
+
+    with pytest.raises(httpx.TimeoutException, match="budget used up"):
+        client._send("POST", TOKEN, authed=False, deadline=MIN_TRY_SECONDS - 0.1)
+
+    assert server.requests == []
+
+
+def test_token_refetch_eating_the_time_left_raises_the_last_order_error():
+    # The token is cached before the call. Order try 1 (5 s) gets a 503 and the
+    # token runs out. Before try 2 the token fetch times out once (8 s, at 13.5 s),
+    # waits, and its second try only gets the 6 s left of the shared deadline; it
+    # succeeds after 5 s: 19 s used, 1 s left. Order try 2 is not sent; the caller
+    # gets the order's last 503, not a token error.
+    server = FakePayPalServer()
+    client = make_client(server)
+    client.get_order("ORDER-1")  # caches token-1, takes no simulated time
+
+    def expire_token_and_fail(request):
+        client._token_expires_at = 0.0
+        return unavailable("dbg-order")
+
+    server.delays[ORDERS] = 5.0
+    server.delays[TOKEN] = 5.0
+    server.replies[ORDERS] = [expire_token_and_fail]
+    server.replies[TOKEN] = [httpx.ReadTimeout("t")]
+
+    with pytest.raises(PayPalError) as exc_info:
+        client.create_order("1.00", "USD", "req-g", "shoes")
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.debug_id == "dbg-order"
+    assert len(server.calls_to(ORDERS)) == 1
+    assert server.token_count == 2
+    # The token fetch shares the order's deadline: its second try is cut to 6 s.
+    token_tries = [(at, t) for path, at, t in server.timeouts if path == TOKEN]
+    assert token_tries[-2:] == [(5.5, 8.0), (14.0, 6.0)]
+    assert client.clock.now <= PAYPAL_BUDGET_SECONDS
+
+
+def test_token_refetch_eating_the_time_left_reraises_the_last_network_error():
+    # Same timeline as above, but order try 1 fails with a network error: that
+    # error is re-raised as is (the route answers 502 and marks the record failed).
+    server = FakePayPalServer()
+    client = make_client(server)
+    client.get_order("ORDER-1")
+
+    def expire_token_and_drop(request):
+        client._token_expires_at = 0.0
+        raise httpx.ConnectError("order connection dropped")
+
+    server.delays[ORDERS] = 5.0
+    server.delays[TOKEN] = 5.0
+    server.replies[ORDERS] = [expire_token_and_drop]
+    server.replies[TOKEN] = [httpx.ReadTimeout("t")]
+
+    with pytest.raises(httpx.ConnectError, match="order connection dropped"):
+        client.create_order("1.00", "USD", "req-g", "shoes")
+
+    assert len(server.calls_to(ORDERS)) == 1
+    assert server.token_count == 2
+    assert client.clock.now <= PAYPAL_BUDGET_SECONDS
