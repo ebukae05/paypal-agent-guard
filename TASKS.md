@@ -26,6 +26,7 @@ risk score. Never cut rules, intent check, audit log or evals.
 - [x] [AI] PayPal 5xx/timeout: retry with the same request ID, then mark the request failed. Done when: tests for retry-then-success and retry-then-fail. Evidence: `PayPalClient._send` (3 tries, one shared 20 s budget), records `create_failed`/`capture_failed`; tests/test_paypal_client.py, test_retry_integration.py, test_paypal_budget.py, test_paypal_request_id_retry.py; tester PASS (docs/TEST_REPORT.md loop 2), reviewer APPROVE (docs/REVIEW.md, 015fcc6)
 - [ ] [AI] Cap each whole PayPal try, not just each read: httpx's timeout is per phase (connect, write, each read gap), so a slow-dripping response can take longer than TIMEOUT_SECONDS per try. Done when: a test with a slow-dripping mock response proves one try never exceeds its time limit
 - [ ] [AI] Faster tests: inject the httpx.Client into PayPalClient so tests stop loading SSL certificates in every test (~0.45 s each). Done when: client tests build no real httpx.Client and the suite time drops
+- [ ] [AI] Validate request_id in POST /purchase-requests: reject blank or whitespace-only IDs and restrict to a safe pattern (e.g. letters, digits, `-`, `_`, max 100), since `min_length=1` lets `" "` through as a PayPal-Request-Id (reviewer note, docs/REVIEW.md). Done when: tests show blank, whitespace-only and invalid IDs get 422 and the agent's UUIDs still pass
 
 ## Rules
 
