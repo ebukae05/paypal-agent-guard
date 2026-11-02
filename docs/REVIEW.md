@@ -152,3 +152,73 @@ The PR should explain:
 4. Optional: one sandbox run where you kill the network during capture, then capture again
    with the same request_id, and confirm in the sandbox dashboard that there is only one
    capture.
+
+---
+
+# Re-review (commits 42b714c, ef0305a, b1bc728)
+
+Scope: `git diff 6265afb..HEAD`. The only production change is in `guard/paypal_client.py`
+(two comment blocks and one condition). The rest is tests and TEST_REPORT.md. Nothing in
+`guard/main.py`, `agent/` or config changed.
+
+## Verdict: APPROVE
+
+## Blocking finding 1: resolved
+
+- paypal_client.py:141 now reads `safe_to_repeat = method == "GET" or bool(request_id) or not authed`.
+  That is the same truthiness check as paypal_client.py:119 (`if request_id:`), which decides
+  whether the header is sent. A POST now gets retries exactly when PayPal-Request-Id is on the
+  wire. Comments on both lines point to each other, so someone editing one later will see the
+  other.
+- Tests: `tests/test_paypal_client.py::test_post_with_empty_request_id_is_not_retried` (one
+  try, no header, no backoff). `tests/test_paypal_request_id_retry.py` covers None, "", 0,
+  False and b"" (no header, one try) and real IDs (same header on every try). It also has a
+  Hypothesis property: "POST retried if and only if the header is on the wire". These tests
+  check the rule itself, not just the one case I flagged.
+
+## Money-safety checklist, rechecked against the code
+
+- Same PayPal-Request-Id on every try: yes. `_headers(request_id, ...)` is rebuilt every try
+  from the same argument (paypal_client.py:149). The capture ID is always `f"{request_id}-capture"`
+  (main.py:183).
+- No try starts after the agent's 30 s give-up: unchanged. A try needs `left >= MIN_TRY_SECONDS`
+  (paypal_client.py:151) and a retry needs backoff + 2 s to fit (`_retry_fits`) inside the
+  20 s deadline. So the last start is at 18 s.
+- No retry of 4xx: unchanged. Only `>= 500` and `TransportError` loop. Everything else goes to
+  `_check`.
+- No retry of an ID-less POST: now true by construction (above).
+- No capture without approval: capture route unchanged in this diff.
+- Secrets: retry logging still prints only method, URL, status and debug_id. The test fakes use
+  placeholder credentials. Nothing new reads or prints `.env`.
+
+## Non-blocking notes (for the human; not change requests)
+
+1. paypal_client.py:32, wording, low. "a try can take roughly 2x the time left" undercounts.
+   httpx applies the timeout separately to each phase (pool, connect, write, and each read
+   gap), so one try can take several times the time left before the body starts. The next
+   clause ("no upper bound") is the accurate claim, and the guarantee the code relies on (no
+   new try starts after 18 s) is stated correctly. It doesn't block because no behavior
+   depends on it. Fix the number or drop it when you take the TASKS.md follow-up for a
+   whole-try deadline.
+2. main.py:71, input validation, low. `request_id=" "` passes `min_length=1`. It counts as a
+   real ID: the header is sent and retries happen, so the client stays consistent with
+   itself. The risk is only on create. A whitespace-only header value may get trimmed to
+   empty somewhere on the way to PayPal, and then a retried create could make a second
+   *order*. That is not a second charge: each order still needs the buyer's approval, and
+   the capture ID `" -capture"` is never blank. Decide whether request_id should be
+   restricted to a pattern (for example no leading or trailing whitespace) as its own
+   small task.
+
+## Checks (run by the reviewer on b1bc728)
+
+- `ruff check .`: All checks passed
+- `ruff format --check .`: 35 files already formatted
+- `mypy .`: no issues in 24 source files
+- `pytest --cov`: 166 passed, total coverage 89%, guard/paypal_client.py 98%
+
+## Still for the human before merging
+
+Items 1, 3 and 4 from the first review's "check personally" list still apply. Item 2 is
+settled by this fix. The PR description still needs the plain-words explanation listed above,
+and should now add: "a POST is retried only if it carries a PayPal-Request-Id; an empty
+ID means one try."
