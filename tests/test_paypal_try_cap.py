@@ -21,6 +21,9 @@ from guard.paypal_client import PayPalError
 
 LIMIT = 0.3  # TIMEOUT_SECONDS during these tests
 MARGIN = 0.2  # how much later than the limit a cut-off try may return
+# A call with several real tries and waits: each wake-up can be late under CPU
+# load, so allow more (tester: 0.2 s failed 1 of 4 loaded runs).
+BUDGET_MARGIN = 0.5
 ORDERS = "/v2/checkout/orders"
 CAPTURE = "/v2/checkout/orders/ORDER-1/capture"
 
@@ -242,10 +245,8 @@ def test_overrun_capture_is_retried_with_the_same_request_id(release):
 # --- The whole call is bounded ---
 
 
-def test_three_dripping_tries_finish_within_the_budget(release, monkeypatch):
+def dripping_real_time_client(release, monkeypatch, budget):
     # A real clock and real (short) waits, so the budget is real time too.
-    # Tries: 0.3 s, wait 0.05, 0.3 s, wait 0.05, then the 0.2 s left of 0.9 s.
-    budget = 0.9
     monkeypatch.setattr(paypal_client, "PAYPAL_BUDGET_SECONDS", budget)
     monkeypatch.setattr(paypal_client, "MIN_TRY_SECONDS", 0.1)
     monkeypatch.setattr(paypal_client, "BACKOFF_SECONDS", (0.05, 0.05))
@@ -256,9 +257,33 @@ def test_three_dripping_tries_finish_within_the_budget(release, monkeypatch):
     client._sleep = time.sleep
     server.clock = None  # stop the fake server from moving the old fake clock
     server.replies[ORDERS] = dripping(release)
+    return server, client
+
+
+def test_three_dripping_tries_finish_within_the_budget(release, monkeypatch):
+    # Tries: 0.3 s, wait 0.05, 0.3 s, wait 0.05, then whatever is left of 0.9 s.
+    # How many tries fit depends on scheduling (under CPU load the third may not
+    # start), so only the budget is asserted here; the try count is checked below
+    # with plenty of slack. (Tester: the old `== 3` failed 5 of 10 runs under load.)
+    budget = 0.9
+    server, client = dripping_real_time_client(release, monkeypatch, budget)
 
     with Stopwatch() as watch, pytest.raises(httpx.TimeoutException):
         client.create_order("1.00", "USD", "req-b", "shoes")
 
-    assert len(server.calls_to(ORDERS)) == 3
-    assert watch.elapsed < budget + MARGIN
+    assert 2 <= len(server.calls_to(ORDERS)) <= 3
+    assert watch.elapsed < budget + BUDGET_MARGIN
+
+
+def test_three_dripping_tries_are_all_made_when_they_fit(release, monkeypatch):
+    # About 1 s of tries and waits inside a 3 s budget: all three tries happen,
+    # each cut off, with the same PayPal-Request-Id, and the call ends well in budget.
+    budget = 3.0
+    server, client = dripping_real_time_client(release, monkeypatch, budget)
+
+    with Stopwatch() as watch, pytest.raises(httpx.TimeoutException):
+        client.create_order("1.00", "USD", "req-b", "shoes")
+
+    ids = [r.headers["PayPal-Request-Id"] for r in server.calls_to(ORDERS)]
+    assert ids == ["req-b"] * 3
+    assert watch.elapsed < budget
