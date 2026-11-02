@@ -24,11 +24,15 @@ PAYPAL_BUDGET_SECONDS = 20.0
 # PayPal normally answers in under 2 s. A retry only starts if its backoff wait
 # plus this much time still fits before the deadline.
 MIN_TRY_SECONDS = 2.0
-# Worst case per guard request: about PAYPAL_BUDGET_SECONDS (20 s), well under the
-# agent's 30 s GUARD_TIMEOUT (agent/settings.py), so the guard answers before the
-# agent gives up. Caveat: httpx timeouts apply per phase (connect, write, each gap
-# between reads), not to the whole try, so a response that drips in slowly can
-# overrun a single try. That is tracked as its own task in TASKS.md.
+# What is guaranteed: no try (token or order) starts later than
+# PAYPAL_BUDGET_SECONDS - MIN_TRY_SECONDS (18 s) after the public method is
+# called, so no new PayPal request starts after the agent's 30 s GUARD_TIMEOUT
+# (agent/settings.py). A try already in flight can run past its timeout: httpx
+# timeouts apply per phase (connect, write, each gap between reads), so a try can
+# take roughly 2x the time left, and a response that drips in slowly has no upper
+# bound. That is tracked as its own task in TASKS.md. If the agent gives up while
+# a request is in flight, that is safe: its retry reuses the same
+# PayPal-Request-Id, so PayPal returns the stored result instead of acting twice.
 
 logger = logging.getLogger("guard.paypal")
 
