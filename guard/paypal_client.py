@@ -112,7 +112,7 @@ class PayPalClient:
             "Content-Type": "application/json",
             "Prefer": "return=representation",
         }
-        if request_id:
+        if request_id:  # same check as safe_to_repeat in _send
             # PayPal stores the response for this ID; a retry with the same ID
             # gets the original result back instead of doing the action twice.
             headers["PayPal-Request-Id"] = request_id
@@ -133,7 +133,8 @@ class PayPalClient:
         """
         if deadline is None:
             deadline = self._new_deadline()
-        safe_to_repeat = method == "GET" or request_id is not None or not authed
+        # Same truthiness as _headers: a POST is retried only if it carries the header.
+        safe_to_repeat = method == "GET" or bool(request_id) or not authed
         attempts = MAX_ATTEMPTS if safe_to_repeat else 1
         last_failure = None  # the last 5xx response or network error
         for attempt in range(1, attempts + 1):

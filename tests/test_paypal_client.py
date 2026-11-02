@@ -506,6 +506,20 @@ def test_post_without_request_id_is_not_retried():
     assert client.waits == []
 
 
+def test_post_with_empty_request_id_is_not_retried():
+    # "" sends no PayPal-Request-Id header, so it must count as "no ID": one try only.
+    server = FakePayPalServer()
+    server.replies[CAPTURE] = unavailable()
+    client = make_client(server)
+
+    with pytest.raises(PayPalError):
+        client.capture_order("ORDER-1", "")
+
+    (request,) = server.calls_to(CAPTURE)
+    assert "PayPal-Request-Id" not in request.headers
+    assert client.waits == []
+
+
 def test_worst_case_retry_time_fits_the_agent_timeout():
     # 30 = GUARD_TIMEOUT in agent/settings.py. Not imported: that module calls
     # load_dotenv() at import time and would read .env.
