@@ -9,8 +9,8 @@ import pytest
 
 from guard import paypal_client
 from guard.paypal_client import (
-    BACKOFF_SECONDS,
     MAX_ATTEMPTS,
+    PAYPAL_BUDGET_SECONDS,
     SANDBOX_BASE_URL,
     TIMEOUT_SECONDS,
     PayPalClient,
@@ -34,27 +34,60 @@ def fake_env(monkeypatch):
     monkeypatch.setenv("PAYPAL_ENV", "sandbox")
 
 
+class FakeClock:
+    """Simulated time for the client's deadline. Nothing really waits."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
 class FakePayPalServer:
     """Records requests and answers like PayPal. Override replies per path to fail.
 
     A reply can be one httpx.Response or exception (used for every call), or a
     list of them consumed in order; once the list is empty the normal reply is used.
+    A reply can also be a function of the request that returns a Response.
+
+    Simulated time (make_client sets `clock`): a timeout exception costs the
+    timeout the client passed for that try; any other answer costs delays[path]
+    seconds, and if that is longer than the try's timeout it becomes a timeout.
     """
 
     def __init__(self, expires_in=32400):
         self.requests = []
         self.expires_in = expires_in
         self.token_count = 0
-        self.replies = {}  # path -> httpx.Response, exception, or a list of them
+        self.replies = {}  # path -> httpx.Response, exception, function, or a list of them
+        self.delays = {}  # path -> seconds each answer takes (simulated)
+        self.clock = None
+        self.timeouts = []  # (path, clock at send, timeout passed for that try)
 
     def __call__(self, request):
         self.requests.append(request)
         path = request.url.path
+        timeout = request.extensions["timeout"]
+        try_timeout = timeout["read"]
+        assert set(timeout.values()) == {try_timeout}  # one number for every phase
+        if self.clock is not None:
+            self.timeouts.append((path, self.clock.now, try_timeout))
         reply = self.replies.get(path)
         if isinstance(reply, list):
             reply = reply.pop(0) if reply else None
+        if isinstance(reply, httpx.TimeoutException):
+            self._advance(try_timeout)
+            raise reply
+        delay = self.delays.get(path, 0.0)
+        if delay > try_timeout:
+            self._advance(try_timeout)
+            raise httpx.ReadTimeout("timed out (simulated slow answer)")
+        self._advance(delay)
         if isinstance(reply, Exception):
             raise reply
+        if callable(reply):
+            reply = reply(request)
         if reply is not None:
             return reply
         if path == "/v1/oauth2/token":
@@ -71,6 +104,10 @@ class FakePayPalServer:
             return httpx.Response(200, json=ORDER_REPLY)
         return httpx.Response(404, json={"name": "NOT_FOUND"})
 
+    def _advance(self, seconds):
+        if self.clock is not None:
+            self.clock.now += seconds
+
     def api_requests(self):
         return [r for r in self.requests if r.url.path != "/v1/oauth2/token"]
 
@@ -81,9 +118,18 @@ class FakePayPalServer:
 def make_client(server):
     client = PayPalClient()
     client.http = httpx.Client(base_url=SANDBOX_BASE_URL, transport=httpx.MockTransport(server))
+    # Fake clock: time only moves when the client waits or the server says so.
+    client.clock = FakeClock()
+    client._clock = client.clock
+    server.clock = client.clock
     # Record retry waits instead of sleeping, so tests stay fast.
     client.waits = []
-    client._sleep = client.waits.append
+
+    def fake_sleep(seconds):
+        client.waits.append(seconds)
+        client.clock.now += seconds
+
+    client._sleep = fake_sleep
     return client
 
 
@@ -462,7 +508,19 @@ def test_worst_case_retry_time_fits_the_agent_timeout():
     # 30 = GUARD_TIMEOUT in agent/settings.py. Not imported: that module calls
     # load_dotenv() at import time and would read .env.
     agent_timeout = 30
-    assert MAX_ATTEMPTS * TIMEOUT_SECONDS + sum(BACKOFF_SECONDS) < agent_timeout
+    assert PAYPAL_BUDGET_SECONDS < agent_timeout
+    # Simulated: token cached, every order try times out after its full timeout.
+    server = FakePayPalServer()
+    client = make_client(server)
+    client.get_order("ORDER-1")  # caches the token
+    server.replies[ORDERS] = httpx.ReadTimeout("t")
+    start = client.clock.now
+
+    with pytest.raises(httpx.TimeoutException):
+        client.create_order("1.00", "USD", "req-r", "shoes")
+
+    elapsed = client.clock.now - start
+    assert elapsed <= PAYPAL_BUDGET_SECONDS, f"guard needs {elapsed} s in the worst case"
 
 
 # --- Tester additions for the retry task (gaps found by mutation testing) ---
@@ -537,15 +595,11 @@ def test_retry_log_never_contains_headers_token_or_body(caplog, failure):
         assert leaked not in caplog.text
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="GAP: the OAuth token call has its own 3-attempt retry budget nested inside "
-    "the order call, so one guard request can take ~43 s, over the agent's 30 s timeout",
-)
 def test_worst_case_including_token_fetch_fits_the_agent_timeout():
-    # Simulated clock: each timed-out attempt costs TIMEOUT_SECONDS and each wait
-    # costs what the client asks for. Token: 2 timeouts then success. Order: always
-    # times out. This happens on the first purchase after start or token expiry.
+    # Simulated clock: each timed-out try costs the timeout the client gave it and
+    # each wait costs what the client asks for. Token: 2 timeouts then success.
+    # Order: always times out. This happens on the first purchase after start or
+    # token expiry. Before the shared deadline this took 43 s.
     agent_timeout = 30  # GUARD_TIMEOUT in agent/settings.py (not imported: reads .env)
     server = FakePayPalServer()
     server.replies[TOKEN] = [httpx.ReadTimeout("t"), httpx.ReadTimeout("t")]
@@ -555,6 +609,7 @@ def test_worst_case_including_token_fetch_fits_the_agent_timeout():
     with pytest.raises(httpx.TimeoutException):
         client.create_order("1.00", "USD", "req-r", "shoes")
 
-    timed_out = 2 + len(server.calls_to(ORDERS))
-    elapsed = timed_out * TIMEOUT_SECONDS + sum(client.waits)
-    assert elapsed < agent_timeout, f"guard needs {elapsed} s in the worst case"
+    assert len(server.calls_to(TOKEN)) == 3
+    assert len(server.calls_to(ORDERS)) >= 1  # the order call was still tried
+    elapsed = client.clock.now
+    assert elapsed <= PAYPAL_BUDGET_SECONDS < agent_timeout, f"guard needs {elapsed} s"
