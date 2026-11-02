@@ -333,3 +333,90 @@ guard request finishes within 20 s, no try starts with less than 2 s left, and e
 retry reuses the same PayPal-Request-Id. Remaining known caveat (out of scope, tracked in
 TASKS.md): httpx timeouts are per phase, so a slowly dripping real response can overrun
 a single try.
+
+---
+
+# Loop 2 (after review)
+
+Scope: reviewer finding in docs/REVIEW.md (6265afb): `_send` retried a POST when
+`request_id is not None`, but `_headers` adds PayPal-Request-Id only when `request_id`
+is truthy, so `request_id=""` got 3 attempts with no idempotency header. Engineer
+commits re-tested: 42b714c (`safe_to_repeat` uses `bool(request_id)`; new test
+`test_post_with_empty_request_id_is_not_retried`) and ef0305a (comment only).
+
+## Retry rule vs header (pass)
+
+Rule tested: a POST is retried if and only if PayPal-Request-Id is actually on the wire;
+every retry carries the same ID; GETs and the token call are always retried.
+
+| request_id | create_order | capture_order | `_send` POST |
+|---|---|---|---|
+| None, "", 0, False, b"" | no header, 1 try | no header, 1 try | no header, 1 try |
+| "req-1", "a", "0", "False", "None", 108 chars | header on all 3 tries | same | same |
+| Hypothesis: falsy values or any printable-ASCII text 0-108 chars (200 examples) | retried iff header present | same | same |
+
+- GET (`_send("GET", ...)` with None/""/0/False/b""/"req-1", and `get_order`): 3 tries, never a PayPal-Request-Id.
+- Token call: 3 tries even when the order POST has `request_id=""` (no order request is sent).
+- Observation, not a failure: `request_id=" "` is truthy, so the header `" "` is sent and
+  the POST is retried, which is consistent with the rule. The route allows it
+  (`min_length=1`). Over real HTTP, h11 would likely reject that header value locally
+  before anything reaches PayPal, so there is no double-charge risk. Worth a
+  `strip()`/pattern check on `request_id` in the route if the user wants one.
+
+## Mutation testing (guard/ restored with `git checkout -- guard/` after each, never committed)
+
+| Mutation | Engineer tests | With tests/test_paypal_request_id_retry.py |
+|---|---|---|
+| M1 `safe_to_repeat` back to `request_id is not None` | caught (new engineer test) | caught |
+| M2 `_headers` uses `request_id is not None` ("" sends empty header, no retry) | caught | caught |
+| M3 drop `bool(request_id)` (POST with ID never retried) | caught | caught |
+| M4 `safe_to_repeat = True` (always retry) | caught | caught |
+| M5 drop `not authed` (token not retried) | caught | caught |
+| M6 drop `method == "GET"` | caught | caught |
+| M7 never send the header | caught | caught |
+| M8 header only when `len(request_id) > 1` (retry rule unchanged) | **survived** | caught |
+| M9 retry only when `len(request_id) > 1` (header rule unchanged) | **survived** | caught |
+
+9 of 9 caught. The Hypothesis property alone catches M1, M2, M8 and M9. M8/M9 show the
+engineer's tests only covered the "" case, not the general "same condition" rule.
+
+## Gaps found and tests added
+
+No bug found. One test gap: nothing tied the header condition to the retry condition in
+general. Added tests/test_paypal_request_id_retry.py (46 tests, about 1.4 s):
+parametrized falsy/truthy IDs for create_order, capture_order and `_send`, a Hypothesis
+property "POST retried iff header on the wire", GET always retried, token call always
+retried. Self-contained fake, no network, no real sleep, `.env` never read.
+
+## Comment at guard/paypal_client.py lines 27-35 (pass, one nit)
+
+- "No try starts later than 18 s after the public method is called": matches the code.
+  Each public method sets `deadline = clock() + 20` once; the token fetch shares that
+  deadline; every try (token or order) is preceded by `left < MIN_TRY_SECONDS` -> no try,
+  so a try starts at most at 20 - 2 = 18 s. Each route makes exactly one public PayPal
+  call (guard/main.py lines 153 and 183). Loop 1 budget tests confirm it and still pass.
+- Per-phase caveat and "drips in slowly has no upper bound": correct and not overstated.
+- Nit: "roughly 2x the time left" undercounts. httpx applies the timeout separately to
+  pool, connect, write and each read gap, so even without dripping a try can take about
+  3-4x the time left. The sentence that follows ("no upper bound") keeps the overall
+  claim honest, so this does not mislead about any guarantee.
+- In-flight safety: correct for order/capture POSTs, which always carry an ID from the
+  routes (create: `purchase.request_id`, min_length 1; capture: `"{request_id}-capture"`).
+
+## Checks
+
+- `ruff check .`: All checks passed
+- `ruff format --check .`: 35 files already formatted
+- `mypy .`: Success, no issues in 24 source files
+- `pytest --cov`: 166 passed (includes tests/test_paypal_budget.py, unchanged and green);
+  guard/paypal_client.py 98%, guard/main.py 96%, total 89%
+
+## Eval
+
+`npx promptfoo@0.125.1 eval`: 5/5 passed (100%). Still the mock provider.
+
+## Verdict (loop 2)
+
+PASS. The review finding is fixed: the retry rule and the PayPal-Request-Id header use
+the same truthiness for None, "", 0, False, b"" and real IDs, through create_order,
+capture_order and `_send`. GET and token retries are unchanged, nothing regressed.
