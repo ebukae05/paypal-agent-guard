@@ -223,3 +223,113 @@ FAIL. The retry-then-success and retry-then-fail tests exist and the retry and m
 logic is correct (every mutation is now caught), but the approved budget rule (the guard
 answers within the agent's 30 s timeout) breaks whenever a token fetch is needed: up to
 43 s (Gap 1). Reproduced by the xfail test above.
+
+# Test report: PayPal 5xx/timeout retry, loop 1 (shared 20 s budget)
+
+Branch feat/guard-core, re-test of 5566152 (fix) and ec5512a (tests) after the FAIL
+above (Gap 1: a token fetch could stretch one guard request to 43 s, over the agent's
+30 s GUARD_TIMEOUT). Judged against the approved design: one deadline of
+PAYPAL_BUDGET_SECONDS (20 s) per create_order / capture_order / get_order, shared with
+the token fetch; per-try timeout = min(8 s, time left); a retry only if backoff +
+MIN_TRY_SECONDS (2 s) fits; no time for the first try raises httpx.TimeoutException
+without sending; clock via `self._clock`.
+
+New file: tests/test_paypal_budget.py (14 tests, its own scripted MockTransport and
+simulated clock, independent of the engineer's fakes).
+
+## Done-when results
+
+| Item | Result |
+| --- | --- |
+| Gap 1: worst case with token fetch fits the agent's 30 s | PASS. Hypothesis (400 random mixes of token/order 503s, timeouts, connect errors, slow answers, token expiry, cached or not, create/capture/get): total simulated time is always <= 20 s |
+| Token and order tries share one deadline | PASS (token fetch inside a retry gets only the time left; every try's timeout equals min(8, 20 - send time)) |
+| No try starts with less than 2 s left (so none after 18 s, never after the agent gives up) | PASS (property over every request sent, token and order) |
+| Retry only if backoff + 2 s fits; boundary is inclusive | PASS at 2.499 / 2.5 / 2.501 s left (first retry) and 2.999 / 3.0 / 3.001 s (second retry) |
+| First try with < 2 s left: TimeoutException, nothing sent | PASS at 1.999 (not sent) / 2.0 / 2.001 s (sent with that timeout), reached through real token tries, no shortcuts |
+| Last error kept: 5xx -> PayPalError with debug_id, network error re-raised | PASS |
+| Token expiry during retries refetched inside the same deadline | PASS (token expires on every order try: tok-1, tok-2, tok-3, all within 20 s) |
+| Same PayPal-Request-Id on every order/capture try; GET has none | PASS (property) |
+| create never sends a capture; capture never creates an order | PASS (property) |
+| No wasted backoff (every wait is followed by a request) | PASS (property) |
+| Each guard request gets its own fresh budget | PASS |
+| 4xx never retried, ID-less POST tried once, no secrets in logs/errors, main.py statuses | PASS (existing tests, unchanged and green) |
+| Worst-case comment updated to the real bound | PASS (says about 20 s; keeps the httpx per-phase timeout caveat, tracked in TASKS.md) |
+
+Engineer's interpretations (not in the design), checked:
+- A token refetch before a retry that leaves < 2 s: the retry is not sent and the order's
+  last error is raised. Behaves as described; consistent with "stop and raise the last
+  error as before".
+- `_send(deadline=None)` falls back to a fresh 20 s deadline. Every public method passes
+  its own deadline, so the fallback is only reachable from tests; removing the explicit
+  deadlines from the public methods gives identical behaviour (equivalent mutant M10).
+
+Observation, not a gap: if the token refetch before a retry itself fails (all its tries
+time out within the budget), the caller gets the token's error (504 timeout) instead of
+the order's earlier 503 (502). The record is marked failed either way and the agent may
+retry safely with the same request ID; this matches the pre-fix behaviour for token
+errors.
+
+## Mutation testing
+
+One change at a time to guard/paypal_client.py, restored with `git checkout -- guard/`
+after the run (`git diff --quiet guard/` clean). "Engineer" = test_paypal_client.py +
+test_retry_integration.py; "tester" = the new test_paypal_budget.py.
+
+| Mutation | Engineer | Tester |
+| --- | --- | --- |
+| M1 token fetch gets its own fresh deadline | caught | caught |
+| M2 fixed 8 s per-try timeout | caught | caught |
+| M3 skip the fit check (`return True`) | caught | caught |
+| M4 skip the first-try check | caught | caught |
+| M5 first-try check `<` -> `<=` | survived | caught |
+| M6 fit check `>=` -> `>` | survived | caught |
+| M7 fit check ignores the backoff | survived | caught |
+| M8 sleep before checking fit | caught | caught |
+| M9 deadline recomputed per try | caught | caught |
+| M10 public methods pass no deadline (fallback) | survived | survived (equivalent: same behaviour) |
+| M11 no 8 s cap (timeout = time left) | caught | caught |
+| M12 first-try check always raises timeout (drops last 5xx) | caught | survived |
+| M13 first-try check uses 0 instead of 2 s | caught | caught |
+| M14 budget 30 s | caught | caught |
+| M15 MIN_TRY_SECONDS 0 | caught | caught |
+| M16 time left measured before the token fetch | caught | caught |
+| M17 fit check always uses the first backoff | survived | caught |
+| M18 token fetch with deadline=None | caught | caught |
+| M19 network-error path ignores the fit check | caught | caught |
+| M20 5xx path ignores the fit check (wasted wait, then give up) | survived | caught |
+
+Combined: 19 of 20 caught; the only survivor (M10) is an equivalent mutant.
+
+## Gaps found and tests added
+
+No real gaps. Five mutations (M5, M6, M7, M17, M20) survived the
+engineer's tests, so the new boundary and property tests in tests/test_paypal_budget.py
+are committed as normal passing tests (no xfail needed).
+
+## Isolation
+
+tests/test_paypal_budget.py, test_paypal_client.py, test_retry_integration.py and
+test_main.py run with `time.sleep`, non-loopback `socket.connect`, non-local DNS and
+`open()` of any `.env` patched to raise: 75 passed. No real sleep, no network, no .env
+read. The new file also stubs the default httpx.Client during construction so
+Hypothesis examples skip the slow SSL setup (14 tests in about 3 s).
+
+## Checks
+
+- `ruff check .`: All checks passed
+- `ruff format --check .`: 33 files already formatted
+- `mypy .`: Success, no issues in 23 source files
+- `pytest --cov`: 119 passed; guard/paypal_client.py 98%, guard/main.py 96%, total 89%
+
+## Eval
+
+`npx promptfoo@0.125.1 eval`: 5/5 passed (100%). Still the mock provider, so this score
+says nothing about the intent check.
+
+## Verdict
+
+PASS. Gap 1 is fixed: in every simulated combination of token and order failures one
+guard request finishes within 20 s, no try starts with less than 2 s left, and every
+retry reuses the same PayPal-Request-Id. Remaining known caveat (out of scope, tracked in
+TASKS.md): httpx timeouts are per phase, so a slowly dripping real response can overrun
+a single try.
