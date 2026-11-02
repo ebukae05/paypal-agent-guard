@@ -18,12 +18,15 @@ risk score. Never cut rules, intent check, audit log or evals.
 - [x] [AI] Shopping agent loop with search and request_purchase tools. Evidence: `agent/`, tests/test_agent.py
 - [x] [AI] Idempotency: a retry never double-charges. Evidence: test_capture_twice_calls_paypal_once, test_capture_retry_after_failure_sends_same_key, test_same_request_id_different_payload_is_409, test_guard_timeout_then_same_product_retry_reuses_request_id
 - [x] [AI] Dev tooling and CI: ruff, mypy, pytest-cov, pre-commit + gitleaks, ci.yml, promptfoo scaffold (PR #1)
-- [ ] [CHECK] Live M1 run: `python -m agent.run "..."` → guard → approve as sandbox buyer → capture COMPLETED
+- [x] [CHECK] Live M1 run: `python -m agent.run "..."` → guard → approve as sandbox buyer → capture COMPLETED. Evidence: shoe-001 ($89.99), sandbox order 9RH81556VE266902J, capture 81W82564R0244494G COMPLETED
 
 ## Hardening what exists
 
-- [ ] [AI] Tests for guard/paypal_client.py (idempotency, declines, timeouts). Done when: mocked HTTP tests cover token caching, PayPal-Request-Id on create and capture, error → PayPalError with debug_id, timeout; coverage of the file well above 38%
-- [ ] [AI] PayPal 5xx/timeout: retry with the same request ID, then mark the request failed. Done when: tests for retry-then-success and retry-then-fail
+- [x] [AI] Tests for guard/paypal_client.py (idempotency, declines, timeouts). Done when: mocked HTTP tests cover token caching, PayPal-Request-Id on create and capture, error → PayPalError with debug_id, timeout; coverage of the file well above 38%. Evidence: tests/test_paypal_client.py (21 tests), 99% coverage, tester PASS (3019eaf, 0f471cf)
+- [x] [AI] PayPal 5xx/timeout: retry with the same request ID, then mark the request failed. Done when: tests for retry-then-success and retry-then-fail. Evidence: `PayPalClient._send` (3 tries, one shared 20 s budget), records `create_failed`/`capture_failed`; tests/test_paypal_client.py, test_retry_integration.py, test_paypal_budget.py, test_paypal_request_id_retry.py; tester PASS (docs/TEST_REPORT.md loop 2), reviewer APPROVE (docs/REVIEW.md, 015fcc6)
+- [ ] [AI] Cap each whole PayPal try, not just each read: httpx's timeout is per phase (connect, write, each read gap), so a slow-dripping response can take longer than TIMEOUT_SECONDS per try. Done when: a test with a slow-dripping mock response proves one try never exceeds its time limit
+- [ ] [AI] Faster tests: inject the httpx.Client into PayPalClient so tests stop loading SSL certificates in every test (~0.45 s each). Done when: client tests build no real httpx.Client and the suite time drops
+- [ ] [AI] Validate request_id in POST /purchase-requests: reject blank or whitespace-only IDs and restrict to a safe pattern (e.g. letters, digits, `-`, `_`, max 100), since `min_length=1` lets `" "` through as a PayPal-Request-Id (reviewer note, docs/REVIEW.md). Done when: tests show blank, whitespace-only and invalid IDs get 422 and the agent's UUIDs still pass
 
 ## Rules
 
@@ -64,8 +67,13 @@ risk score. Never cut rules, intent check, audit log or evals.
 - [ ] [AI] README: problem, architecture diagram, eval table, how to run, tools used
 - [ ] [AI] Stretch, only if everything above is done: guard as an MCP tool
 - [ ] [CHECK] Feature freeze; final eval run; I record the demo and submit by Nov 12 noon
+- [x] [AI] Progress dashboard: `scripts/progress.py` writes progress.html from TASKS.md and git. Evidence: tests/test_progress.py
 
 ## Progress notes
 
 (Claude appends one line per finished task: date, task, what changed, test result.)
 - 2026-11-01: TASKS.md created and synced with the code; setup, M1 pieces and idempotency ticked with evidence.
+- 2026-11-01: Live M1 run passed: agent → guard → sandbox buyer approval → capture COMPLETED (order 9RH81556VE266902J, capture 81W82564R0244494G). ruff, mypy, pytest green.
+- 2026-11-01: Progress dashboard: scripts/progress.py (stdlib) renders progress.html with ring, milestone bars, countdown, burndown, task board, notes and CI status; tests/test_progress.py added.
+- 2026-11-01: paypal_client tests: 21 mocked-HTTP tests (token cache, PayPal-Request-Id, PayPalError + debug_id, timeouts, sandbox host); coverage 38% → 99%; tester PASS (16/18 mutations caught, the rest fixed or harmless); 74 passed.
+- 2026-11-01: PayPal 5xx/timeout retry: 3 tries with the same PayPal-Request-Id inside one 20 s budget shared with the token fetch; failures marked on the record; ID-less POSTs tried once. Tester FAIL (43 s worst case) → fixed → PASS; reviewer found an empty-ID retry bug → fixed → APPROVE. 166 passed.
