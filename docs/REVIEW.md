@@ -222,3 +222,133 @@ Items 1, 3 and 4 from the first review's "check personally" list still apply. It
 settled by this fix. The PR description still needs the plain-words explanation listed above,
 and should now add: "a POST is retried only if it carries a PayPal-Request-Id; an empty
 ID means one try."
+
+---
+
+# Review: cap each whole PayPal try (feat/try-cap)
+
+Base: origin/main d9833f0. Commits: a777138 (feat), e35bb28 (tests), 1f5e448 (tester attack
+tests + de-flake), d366587 (comment fix, TASKS.md tick, follow-up task). Task: TASKS.md,
+Hardening, "Cap each whole PayPal try". Plan: staged-jingling-lighthouse.md (approved).
+
+Note: the local `main` ref is stale (4d3da4b, before PR #3), so `git diff main...HEAD` also
+shows PR #3's changes. This review uses `d9833f0..HEAD`, which matches `origin/main`. Open
+the PR against `origin/main`.
+
+## Verdict: APPROVE
+
+No change requests. The change matches the approved plan, stays in scope (one helper, one call
+site, comments, tests, TASKS.md) and keeps every money-safety rule. Tester finding F1 (an
+abandoned dripping thread keeps running) is handled the way the user chose: the comment at
+paypal_client.py:196-199 now says so, and TASKS.md has the follow-up task. It is not requested
+again here.
+
+## Checks (run by the reviewer on d366587)
+
+- `ruff check .`: All checks passed
+- `ruff format --check .`: 37 files already formatted
+- `mypy .`: no issues in 26 source files
+- `pytest`: 196 passed, 1 xfailed (the strict xfail for F1), 72 s locally
+
+## Scope, zones, CLAUDE.md
+
+- Diff touches only guard/paypal_client.py, two new test files, docs/TEST_REPORT.md and
+  TASKS.md. main.py, the agent and DESIGN.md are unchanged, as the plan said.
+- Hand-written zones untouched: no intent check code, no eval cases or labels.
+- Secrets: none. Tests use placeholder credentials and never read `.env`. The new
+  TimeoutException message holds only the limit. Logging is unchanged.
+- Sandbox only: `SANDBOX_BASE_URL` and the `PAYPAL_ENV` check are unchanged. The F1 test uses
+  a local 127.0.0.1 server, not PayPal.
+- DESIGN.md Risks row "PayPal API error": still retry with the same request ID, then mark
+  failed. An overrun becomes `httpx.TimeoutException`, so main.py marks `*_failed` and answers
+  504, as before.
+
+## Money-safety checklist (checked against the code)
+
+- Same PayPal-Request-Id on every try: headers are still built in `_send` (line 152) from the
+  same `request_id` and passed through `**kwargs` into the thread. The capped helper never
+  touches headers. Tested for create and capture overruns (engineer tests) and with a
+  PayPal-like server that charges once (`test_overrun_capture_that_succeeded_at_paypal_is_charged_once`).
+- Late responses: each call gets its own `outcome` dict (line 188), and the overrun path
+  raises before it reads `outcome` (lines 203-204). So a late answer can't be returned or show
+  up in a later try. Tested (`test_late_response_of_an_overrun_try_is_never_returned`).
+- Exception passthrough: `run()` catches BaseException and the caller re-raises the same
+  object (line 206), so ConnectError, ReadTimeout and 5xx take the same retry path as before.
+  Tested by identity (`is`).
+- No retry of an ID-less POST: unchanged. `safe_to_repeat` still decides attempts. An overrun
+  is a TransportError, which `_retry_fits` only allows while `attempt < attempts`. Tested for
+  None and "".
+- Capture only after approval, and the log before PayPal: not changed by this diff.
+- Limit at least 2 s: `left >= MIN_TRY_SECONDS` is checked (line 154) before the helper runs,
+  so `join(limit)` never gets zero or a negative number.
+- Guarantee comment (lines 28-37): accurate for the caller. Each try is cut off at
+  `min(TIMEOUT_SECONDS, left)`, the token fetch shares the deadline and is capped the same
+  way, and retries only start if `_retry_fits`. The Hypothesis property in the attack file
+  checks this for 200 failure mixes. See note 2 for the small extra time it leaves out.
+
+## Non-blocking notes (for the human; not change requests)
+
+1. paypal_client.py:35-37 and 202-204, overlapping tries, low money risk, worth knowing.
+   Before this PR a try that ran long ended (and closed its connection) before the retry
+   started. Now the retry can go out while the abandoned try is still in flight with the
+   same PayPal-Request-Id. This is not only the dripping case: any try whose phases add up to
+   more than the limit can do it, for example a 5 s connect followed by a 5 s read wait. The
+   comment says PayPal "returns the stored result", but for a request that is still in
+   flight that hasn't been checked yet. PayPal might answer with a 4xx such as "previous
+   request in progress". If it does: main.py:101-113 treats a 4xx as not retryable, so the
+   record keeps its old status ("pending" or "order_created"), the route answers 502 (or 409),
+   and the agent's next retry gets the stored result. Money is still safe. A capture uses the
+   same ID and an order can only be captured once. A duplicate create at worst makes a second
+   order that nobody approves, because only the recorded order's approval link goes to the
+   buyer. The sandbox check is already part of the follow-up task in TASKS.md. The PR
+   description should say that tries can now overlap.
+2. paypal_client.py:31, wording. "returns within PAYPAL_BUDGET_SECONDS (20 s)" leaves out a
+   few milliseconds: thread start, a late `join` wake-up, and parsing JSON after the response.
+   That's harmless with 10 s of headroom before the agent's 30 s `GUARD_TIMEOUT`. Just don't
+   quote it as an exact bound in an interview.
+3. paypal_client.py:201, rare failure path. `thread.start()` can raise `RuntimeError` if the
+   OS runs out of threads, for example after a long outage leaves many abandoned dripping
+   threads (F1). That isn't a TransportError, so the route answers 500 and the record stays
+   "pending" instead of being marked failed. A retry is still safe because it uses the same
+   ID. The F1 follow-up task removes the cause.
+4. Shared `httpx.Client` used from several threads (an abandoned try plus the next one). The
+   httpx client's connection pool is safe for requests sent from several threads at once, and
+   the sync FastAPI routes already shared it across worker threads. Nothing new here, except
+   that F1 can fill the pool (100 connections). Then `PoolTimeout`, a TimeoutException, makes
+   later tries fail fast and get marked failed.
+5. CI reliability of real-time tests. The single-try tests allow 0.2 s past the limit
+   (tests/test_paypal_try_cap.py:23). `test_fast_response_comes_through_normally` (line 162)
+   wants two mock requests done in under 0.3 s. Multi-try tests allow 0.5 s. The tester's
+   loaded runs passed after the de-flake. CI also runs under `--cov` tracing on a shared
+   runner, which is slower. Expect these to pass. If one flakes, rerun it and widen that
+   test's margin. Never loosen the cap itself. The strict xfail (attack file, line 466) is
+   safe on CI: the drip server runs for 3 s and the check happens about 1.3 s in.
+6. Simplicity: the helper is about 15 lines, has no new dependency and duplicates nothing.
+   The ~28 s of real-time test cost is the price of testing a real wall-clock cap. The
+   existing "Faster tests" task covers the other half of the suite's time.
+
+## PR description (none exists yet)
+
+Because this touches retries and the PayPal-Request-Id, the description must explain in plain
+words:
+- Why: httpx times each phase separately, so a slowly dripping response never timed out and
+  could outlast the agent's 30 s wait.
+- What: each try runs in a daemon thread. The caller waits at most the try's limit. An
+  overrun becomes a normal timeout (retry with the same ID, or 504 and the record marked
+  failed).
+- Edge cases: a late answer is thrown away. A try that was cut off may still have succeeded
+  at PayPal, and the retry with the same ID gets the stored result, so there is no double
+  charge. The retry can overlap the abandoned try (note 1). An abandoned dripping thread keeps
+  its connection until PayPal stops (F1, follow-up task). An ID-less POST is still tried once.
+- How to test: `pytest tests/test_paypal_try_cap.py tests/test_paypal_try_cap_attack.py`. The
+  Done-when test is `test_slow_drip_body_is_cut_off_at_the_limit`.
+
+## For the human to check personally before merging
+
+1. Read `_request_with_cap` (paypal_client.py:180-207) and be able to explain three things:
+   why the overrun check comes before reading `outcome`, why `run()` catches BaseException,
+   and why a daemon thread is used.
+2. Decide whether note 1 (overlapping tries with the same ID) is fine to leave for the sandbox
+   check in the follow-up task. My view: yes, since no money can move twice.
+3. Make sure the PR targets `origin/main` (your local `main` is stale) and that the first CI
+   run is green. Watch for the real-time tests in note 5.

@@ -420,3 +420,132 @@ retried. Self-contained fake, no network, no real sleep, `.env` never read.
 PASS. The review finding is fixed: the retry rule and the PayPal-Request-Id header use
 the same truthiness for None, "", 0, False, b"" and real IDs, through create_order,
 capture_order and `_send`. GET and token retries are unchanged, nothing regressed.
+
+---
+
+# Test report: cap each whole PayPal try (wall-clock limit)
+
+Task (TASKS.md, Hardening): "[AI] Cap each whole PayPal try, not just each read ...
+Done when: a test with a slow-dripping mock response proves one try never exceeds its
+time limit". Commits under test: a777138 (feat), e35bb28 (tests), branch feat/try-cap.
+The tester did not change application code.
+
+## Done-when results
+
+| Item | Result | Evidence |
+|---|---|---|
+| A slow-dripping mock response: one try never exceeds its time limit | PASS | `test_slow_drip_body_is_cut_off_at_the_limit` (0.3 s limit, cut off between 0.3 and 0.5 s while the body is still dripping); `test_slow_headers_are_cut_off_at_the_limit`; tester `test_cut_off_is_tight_with_a_longer_limit` (a 1.0 s limit ends before 1.2 s, which catches a cap that is 50% too loose) |
+| Claimed guarantee: each public method returns within PAYPAL_BUDGET_SECONDS | PASS | Hypothesis property `test_every_try_ends_by_the_deadline_for_any_failure_mix`: 200 mixes of overrun, connect error, 5xx and ok for token and order calls, with the token refetched before every try, on a fake clock. Every try's start + limit is <= the deadline, no try starts after deadline - MIN_TRY_SECONDS, and the total is <= the budget. On the real clock, these cases all end within the budget: a dripping token fetch, a dripping token refetch between order tries, a slow 5xx token followed by a dripping order, and three dripping order tries |
+| Money safety: an overrun try is retried with the same PayPal-Request-Id | PASS | Engineer tests, plus `test_overrun_capture_that_succeeded_at_paypal_is_charged_once`. Its PayPal-like server stores the capture by request ID and the first reply never arrives in time. Result: one charge, two requests, and the capture is returned |
+| A late response is never returned or mistaken for a later try's result | PASS | `test_late_response_of_an_overrun_try_is_never_returned`: try 1 answers "LATE" while try 2 is still waiting. The call returns try 2's order and the next call is unaffected. Each try has its own `outcome` dict |
+| A POST without a request ID is tried once, even on overrun | PASS | `test_overrun_post_without_request_id_is_tried_once` (None and ""; no hidden extra try shows up after waiting) |
+| Thread exceptions are re-raised unchanged; never returns None | PASS | The same object (`is`) comes back for ConnectError, ReadTimeout and RemoteProtocolError (the last of 3 retries), and for a plain Exception, ValueError, KeyError and a BaseException subclass (not retried). Also `test_capped_try_returns_the_response_object_never_none` |
+| The try runs in a daemon thread | PASS | `test_try_runs_in_a_daemon_thread` |
+| No test leaves a thread running | PASS | The `release` fixtures join every thread a test started. A session plugin checked for live threads after every test in the full suite: no test left one behind and none were alive at session end |
+
+## Findings
+
+### F1 (does not block the Done-when, but a claim in the plan and comment is false): an abandoned dripping try keeps running
+
+- Input: a real local HTTP server (127.0.0.1, real httpx transport, no PayPal). It sends
+  headers, then one body byte every 0.1 s for 3 s. `TIMEOUT_SECONDS` = 0.3; one POST
+  without a request ID.
+- What happened: the caller gets `httpx.TimeoutException` at 0.3 s, which is correct. But
+  the abandoned try thread is still alive 1 s later and keeps reading until the server stops.
+- What was expected: the code comment in `_request_with_cap` ("An abandoned try ends by its
+  httpx timeouts") and the approved plan ("Each one ends when its httpx phase timeout
+  fires") say the thread ends on its own. For a slow-dripping body, which is exactly the
+  case this task targets, no per-phase timeout ever fires.
+- Impact: no money risk, and the caller's time limit holds. If PayPal keeps dripping,
+  abandoned threads pile up and each holds a pooled connection (the httpx pool defaults
+  to 100 connections). Once the pool is full, new tries fail with PoolTimeout. The cap
+  bounds those failures, so they fail fast instead of hanging. Also, while an abandoned
+  try is still in flight, the retry runs at the same time with the same PayPal-Request-Id.
+  How PayPal answers two in-flight requests with the same ID needs one sandbox check.
+- Suggested direction (the user decides): correct the comment, or stop the abandoned
+  thread at the next chunk (stream the body inside the thread and check a stop flag or
+  deadline between chunks).
+- Reproduced by: `test_abandoned_dripping_try_thread_ends_soon_after_the_cut_off`, marked
+  `xfail(strict=True, raises=StillRunning)`. Only the final "still running" check counts as
+  the expected failure. Once the bug is fixed the test fails hard, so the marker must then
+  be removed.
+
+### F2 (flaky test, fixed in the tests): `test_three_dripping_tries_finish_within_the_budget`
+
+- Idle: 15 of 15 runs passed. Under CPU load (16 busy processes on 8 cores), 5 of 10 runs
+  failed, every time on `assert len(server.calls_to(ORDERS)) == 3` (got 2). The budget
+  assertion itself held. With a 0.9 s budget, the third try only starts if no more than
+  0.15 s of slack has been used, and late wake-ups use it up. The code is right to skip
+  that try; the test was too tight.
+- Change: that test now asserts 2 or 3 tries plus the budget. A new test,
+  `test_three_dripping_tries_are_all_made_when_they_fit` (3 s budget), asserts exactly
+  three tries, all with the same PayPal-Request-Id.
+- Also under load, one tester multi-try test overshot budget + 0.2 s once (1.35 s against
+  1.2 s, in 1 of 4 loaded runs). The cause is scheduling delay on the last wake-up. All
+  real-clock budget assertions with several tries (engineer and tester) now use
+  `BUDGET_MARGIN = 0.5`. Single-try cut-off tests keep the 0.2 s margin; they never failed
+  under load.
+
+## Mutation testing (guard/ restored after each; `git status` clean)
+
+| Mutation | Engineer tests | + tester tests |
+|---|---|---|
+| M1 `join()` with no timeout | caught | caught |
+| M2 on overrun wait, return the late response | caught | caught |
+| M3 `outcome` shared across tries, first answer wins | caught | caught |
+| M4 swallow thread exception, return None | caught | caught |
+| M5 overrun raises builtin `TimeoutError` | caught | caught |
+| M6 overrun raises `PayPalError(504)` | caught | caught |
+| M7 overrun returns None | caught | caught |
+| M8 drop `timeout=limit` passed to httpx | caught | caught |
+| M9 non-daemon thread | **survived** | caught |
+| M10 loose cap `join(limit + 0.5)` | caught | caught |
+| M11 loose cap `join(limit * 1.5)` | **survived** | caught (`test_cut_off_is_tight_with_a_longer_limit`) |
+| M12 call site uses TIMEOUT_SECONDS, ignores time left | **survived** in the new file (older budget tests catch it) | caught (Hypothesis property) |
+| M13 call site uses `left`, no 8 s cap | caught | caught |
+| M14 thread error re-raised as a copy | caught | caught |
+| M15 thread error converted to TimeoutException | caught | caught |
+| M16 `run()` catches Exception, not BaseException | **survived** | caught |
+| M17 no thread (plain call, as before the change) | caught | caught |
+| M18 retries drop PayPal-Request-Id | caught | caught |
+| M19 call-site limit + 0.3 s (try can pass the deadline) | caught | caught |
+
+The full suite catches all 19 mutations. The engineer's new file alone missed 4.
+
+## Flakiness runs
+
+- tests/test_paypal_try_cap.py as committed, 15 runs idle: 15 of 15 passed.
+- Same file under CPU load: 5 of 10 failed (F2, before the fix).
+- Both files after the try-count fix, 15 runs idle: 15 of 15 passed (about 28 s per run).
+- Both files under load before the margin change: 3 of 3 fully loaded runs passed. One
+  partly loaded run hit the 0.2 s budget margin.
+- Both files under load after the margin change: 2 of 2 passed (about 177 s per run).
+
+## Tests added or changed
+
+- tests/test_paypal_try_cap_attack.py (new): 18 tests plus 1 strict xfail. They cover the
+  Hypothesis budget property, the token path, a token refetch between tries, late
+  responses, a capture charged once, POSTs without a request ID, exception identity,
+  never returning None, the daemon flag, a tight cap, and the abandoned-thread finding (F1).
+- tests/test_paypal_try_cap.py: the three-tries test is split (F2), and the multi-try
+  budget assertion uses `BUDGET_MARGIN`. No single-try assertion was loosened.
+
+## Checks
+
+- `ruff check .`: All checks passed
+- `ruff format --check .`: 37 files already formatted
+- `mypy .`: Success, no issues in 26 source files
+- `pytest --cov`: 196 passed, 1 xfailed; guard/paypal_client.py 99%, total 90%
+
+## Eval
+
+`npx promptfoo@0.125.1 eval`: 5/5 passed (100%). Still the mock provider.
+
+## Verdict
+
+PASS. The Done-when holds: a try whose body or headers drip in slowly is cut off at its
+limit. The whole call stays within its budget on every path tested: token fetch, token
+refetch between tries, and backoff waits. Overrun tries are retried with the same
+PayPal-Request-Id, late responses are dropped, and exceptions from the thread come through
+unchanged. Open item for the user: F1. For a dripping body the abandoned thread does not
+end by itself, although the comment and the plan say it does.
